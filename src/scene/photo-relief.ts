@@ -5,10 +5,12 @@
  * source pixels into a standing bas-relief: a plane whose vertices are pushed
  * along its normal by the estimated depth, textured with the original photo.
  *
- * This is a 2.5D reconstruction, not a watertight model — the front surface is
- * real geometry, there is no back face. That is an honest limit of monocular
- * depth, and the mesh is built to read as a relief sculpture rather than to
- * pretend otherwise.
+ * Monocular depth gives one surface: the front. When the background can be
+ * cut away (see cutBackgroundByDepth) the front is mirrored through the
+ * silhouette plane to close the object, on the assumption that what you cannot
+ * see roughly matches what you can. A ball becomes a sphere, a mug a pillow
+ * with a handle. When there is no background to cut, the plain relief stays:
+ * a full-frame photo has no silhouette to mirror through.
  *
  * Pure and synchronous. All async work (decode, inference) happens upstream.
  */
@@ -21,8 +23,11 @@ import { disposeObject3D, type ModelHandle } from './models';
 /** Longest edge of the finished relief, in world units. */
 const TARGET_SIZE = 6;
 
-/** How far the nearest pixel stands proud of the furthest. */
+/** Relief height when there is no silhouette to size it from. */
 const RELIEF_DEPTH = 1.4;
+
+/** Ceiling on the dome height a silhouette can ask for. */
+const MAX_DOME = TARGET_SIZE * 0.5;
 
 /** Vertex grid ceiling. A 768px depth map would otherwise be ~590k vertices. */
 const MAX_SEGMENTS = 220;
@@ -150,20 +155,78 @@ function cutBackgroundByDepth(
   return cut > 0 ? threshold : null;
 }
 
+interface Survivors {
+  /** Depth at the silhouette edge and at the nearest point, as percentiles. */
+  floor: number;
+  ceil: number;
+  /** Silhouette bounding box in pixel rows/cols. */
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
 /**
- * Once the background is gone the surviving depths only span part of 0..1.
- * Stretch them so the subject's own edge sits at zero and its nearest point
- * uses the full relief height: a ball becomes a dome, not a bump on a sheet.
- * Cut pixels clamp to zero, so the skirt around the silhouette lies flat.
+ * Where the subject is and which depths it spans, once the background is cut.
+ *
+ * Otsu's split lands somewhere in the gap between background and subject, not
+ * on the subject's own edge, so remapping from the threshold leaves the edge
+ * standing on a wall. The 2nd percentile of the survivors is the edge itself
+ * for any convex-ish object; the 99th shrugs off a few hot pixels.
  */
-function remapAboveThreshold(depth: Float32Array, threshold: number): Float32Array {
-  let hi = -Infinity;
-  for (let i = 0; i < depth.length; i += 1) if (depth[i] > hi) hi = depth[i];
-  const range = Math.max(1e-6, hi - threshold);
+function survivorStats(
+  depth: Float32Array,
+  colors: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Survivors | null {
+  let minX = width;
+  let maxX = -1;
+  let minY = height;
+  let maxY = -1;
+  let count = 0;
+  const vals = new Float32Array(depth.length);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      if (colors[i * 4 + 3] === 0) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      vals[count] = depth[i];
+      count += 1;
+    }
+  }
+  if (count < 64) return null;
+
+  const sorted = vals.subarray(0, count).sort();
+  const floor = sorted[Math.floor(count * 0.02)];
+  const ceil = sorted[Math.min(count - 1, Math.floor(count * 0.99))];
+  if (ceil - floor < 1e-4) return null;
+
+  return { floor, ceil, minX, maxX, minY, maxY };
+}
+
+/**
+ * Stretch surviving depths so the silhouette edge sits at zero and the
+ * nearest point at one. Cut pixels clamp to zero, so the discarded skirt
+ * around the silhouette lies flat and the mirrored back meets the front
+ * exactly at the edge.
+ */
+function remapSurvivors(
+  depth: Float32Array,
+  colors: Uint8ClampedArray,
+  floor: number,
+  ceil: number,
+): Float32Array {
+  const range = ceil - floor;
   const out = new Float32Array(depth.length);
   for (let i = 0; i < depth.length; i += 1) {
-    const d = (depth[i] - threshold) / range;
-    out[i] = d > 0 ? d : 0;
+    if (colors[i * 4 + 3] === 0) continue;
+    const d = (depth[i] - floor) / range;
+    out[i] = d < 0 ? 0 : d > 1 ? 1 : d;
   }
   return out;
 }
@@ -176,7 +239,11 @@ export function buildPhotoRelief(
   // Copy first: the cut writes alpha, and the caller's buffer is not ours.
   const colors = new Uint8ClampedArray(input.colors);
   const threshold = cutBackgroundByDepth(depth, colors, width, height);
-  const relief = threshold === null ? depth : remapAboveThreshold(depth, threshold);
+  const stats =
+    threshold === null ? null : survivorStats(depth, colors, width, height);
+  const relief = stats
+    ? remapSurvivors(depth, colors, stats.floor, stats.ceil)
+    : depth;
 
   const group = new THREE.Group();
   group.name = 'wired-photo-relief';
@@ -186,6 +253,19 @@ export function buildPhotoRelief(
   const aspect = width / Math.max(1, height);
   const planeW = aspect >= 1 ? TARGET_SIZE : TARGET_SIZE * aspect;
   const planeH = aspect >= 1 ? TARGET_SIZE / aspect : TARGET_SIZE;
+
+  /* --- how tall the dome should be --------------------------------------- */
+
+  // Relative depth says nothing about absolute thickness, so the silhouette
+  // decides: half its shorter side, which makes a round thing round. A flat
+  // object photographed face-on gets fatter than it is; that is the price of
+  // a back face, and the plain relief is still there for full-frame photos.
+  let reliefDepth = RELIEF_DEPTH;
+  if (stats) {
+    const silW = ((stats.maxX - stats.minX + 1) / width) * planeW;
+    const silH = ((stats.maxY - stats.minY + 1) / height) * planeH;
+    reliefDepth = Math.min(MAX_DOME, 0.5 * Math.min(silW, silH));
+  }
 
   const segX = Math.max(2, Math.min(MAX_SEGMENTS, width - 1));
   const segY = Math.max(2, Math.min(MAX_SEGMENTS, height - 1));
@@ -204,7 +284,7 @@ export function buildPhotoRelief(
       const u = cols > 1 ? col / (cols - 1) : 0;
       const v = rows > 1 ? row / (rows - 1) : 0;
       const d = sampleDepth(relief, width, height, u, v);
-      position.setZ(index, d * RELIEF_DEPTH);
+      position.setZ(index, d * reliefDepth);
     }
   }
 
@@ -248,21 +328,45 @@ export function buildPhotoRelief(
     // transparent pass sorts per-object, not per-fragment, so folds in the
     // relief draw over each other. Alpha-test keeps it in the opaque pass.
     transparent: false,
-    alphaTest: 0.35,
+    // 0.5 rather than lower: the alpha ramp across the cut edge is one texel
+    // wide, and keeping its faint half leaves a stretched sliver of skirt.
+    alphaTest: 0.5,
   });
 
   const mesh = new THREE.Mesh(geometry, material);
   group.add(mesh);
 
+  if (stats) {
+    // Back face: the same sheet reflected through z=0. Both halves put their
+    // silhouette edge at z=0, so they meet there without a side wall. The
+    // negative scale flips the normal matrix too, so the back lights as an
+    // outward surface without a second geometry.
+    const back = new THREE.Mesh(geometry, material);
+    back.scale.z = -1;
+    group.add(back);
+  }
 
-  // Stand it upright on the stage, facing the default camera.
-  group.position.y = planeH / 2;
+  /* --- place it on the stage --------------------------------------------- */
+
+  // Centre the subject, not the photo: the cut leaves the ball wherever it sat
+  // in the frame, and the stage should show it standing on the grid.
+  let baseY = planeH / 2;
+  let baseX = 0;
+  if (stats) {
+    const cx =
+      ((stats.minX + stats.maxX) / 2 / Math.max(1, width - 1) - 0.5) * planeW;
+    const bottom =
+      planeH / 2 - (stats.maxY / Math.max(1, height - 1)) * planeH;
+    baseX = -cx;
+    baseY = -bottom;
+  }
+  group.position.set(baseX, baseY, 0);
 
   // The relief wears the photo's own colours; the palette does not apply.
   const setColors = (): void => {};
 
   const update = (elapsed: number): void => {
-    group.position.y = planeH / 2 + Math.sin(elapsed * 0.7) * 0.08;
+    group.position.y = baseY + Math.sin(elapsed * 0.7) * 0.08;
   };
 
   const dispose = (): void => {

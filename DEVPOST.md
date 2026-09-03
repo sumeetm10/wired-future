@@ -68,7 +68,9 @@ carbon fibre at 11 kg, with the geometry on screen changing to match.
 
 **Photo to 3D, with no server**
 
-Drop a photo of an object and it becomes relief geometry on the stage. Depth Anything V2
+Drop a photo of an object and it becomes a closed 3D shape on the stage: the depth
+map is cut from its background, domed to the height its silhouette implies, and
+mirrored for a back face, so a ball comes out a ball. Depth Anything V2
 Small runs in the browser tab through transformers.js, on WebGPU where available. A CLIP
 zero-shot pass declines people and animals before any geometry is built.
 

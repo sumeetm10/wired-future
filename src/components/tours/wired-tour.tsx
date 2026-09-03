@@ -45,7 +45,7 @@ const STEPS: TourStep[] = [
     sel: '#tour-photo',
     title: 'Photo to 3D',
     body:
-      'Drop a photo of an object. A depth model runs in this tab, so nothing is uploaded. Expect a relief, not a full model.',
+      'Drop a photo of an object. A depth model runs in this tab, so nothing is uploaded; the front is mirrored to close the back.',
   },
   {
     sel: '#tour-trace',

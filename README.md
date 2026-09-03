@@ -186,9 +186,12 @@ This runs **entirely in the browser**. There is no server, no API key and no upl
 - Weights stream from the HuggingFace CDN on first use (~50 MB) and are then cached
   by the browser.
 
-An honest limit: monocular depth gives a **2.5D relief**, not a watertight mesh. The
-surface facing the camera is real geometry; there is no back face. The mesh is built
-to read as a relief sculpture rather than to pretend otherwise.
+Monocular depth gives one surface, the front. When the background can be cut away
+(a border-ring median bounds an Otsu split of the depth histogram) the front is
+mirrored through the silhouette plane to close the object, with the dome height taken
+from the silhouette so a round thing comes out round. A ball becomes a sphere; a mug
+becomes a pillow with a handle. The back is an assumption, not a measurement, and a
+full-frame photo with no background to cut stays a plain **2.5D relief**.
 
 ---
 
