@@ -331,7 +331,8 @@ src/
 
 MIT — see [LICENSE](LICENSE).
 
+Bundled assets keep their own terms — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 The CarConcept glTF is CC BY 4.0 (KhronosGroup/glTF-Sample-Assets, by Eric Chadwick from a
-public-domain model, attribution to Darmstadt Graphics Group GmbH). Chakra Petch and
-JetBrains Mono are under the SIL Open Font License 1.1. Depth Anything V2 Small and CLIP
-weights are not bundled; they stream from the Hugging Face CDN at runtime.
+public-domain model, attribution to Darmstadt Graphics Group GmbH) and the two webfonts are
+under the SIL Open Font License 1.1. Depth Anything V2 Small and CLIP weights are not
+bundled; they stream from the Hugging Face CDN at runtime.
