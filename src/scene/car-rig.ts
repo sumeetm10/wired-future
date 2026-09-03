@@ -188,6 +188,12 @@ interface CarNode {
   assembly: CarPartId;
   pivot: THREE.Group;
   mesh: THREE.Mesh;
+  /**
+   * Unit direction this part slides along when dragged out, in the assembly's
+   * local space: away from the car's centre, biased upward so parts lift clear
+   * rather than sinking into the ground.
+   */
+  outward: THREE.Vector3;
   /** Rest position of the node pivot, before any user transform. */
   basePosition: THREE.Vector3;
   triangles: number;
@@ -237,6 +243,10 @@ export interface CarRig {
   setNodeHidden: (ids: string[]) => void;
   /** Read a node's live transform back, for the gizmo -> store direction. */
   readNodeTransform: (id: string) => NodeTransform | null;
+  /** Direction this part slides when dragged out, in world space. */
+  nodeOutwardWorld: (id: string) => THREE.Vector3 | null;
+  /** Whether this assembly has a hinge, i.e. whether a click can open it. */
+  hasHinge: (assembly: CarPartId) => boolean;
   /** Real geometry measurements for one assembly, or null if absent. */
   measurePart: (id: CarPartId) => PartMeasurement | null;
   /** Reshape and re-material one assembly. Absolute, not cumulative. */
@@ -370,8 +380,21 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
         (indexed ? indexed.count : geometry.getAttribute('position')?.count ?? 0) / 3,
       );
 
+      // Outward is computed from the car's centre, then expressed in the
+      // assembly's local frame so it stays correct once the door swings.
+      const worldOut = meshCentre.clone().sub(fullCentre);
+      if (worldOut.lengthSq() < 1e-6) worldOut.set(0, 1, 0);
+      worldOut.normalize();
+      worldOut.y += 0.3;
+      worldOut.normalize();
+      const localOut = worldOut
+        .clone()
+        .applyQuaternion(pivot.getWorldQuaternion(new THREE.Quaternion()).invert())
+        .normalize();
+
       const node: CarNode = {
         id: nodeId,
+        outward: localOut,
         label: humanise(
           mesh.name,
           CAR_PART_LABELS[id] + ' part ' + (assemblySeq.get(id) ?? 1),
@@ -563,6 +586,19 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     };
   };
 
+  const nodeOutwardWorld = (id: string): THREE.Vector3 | null => {
+    const node = nodes.get(id);
+    if (!node || !node.pivot.parent) return null;
+    node.pivot.parent.updateMatrixWorld(true);
+    return node.outward
+      .clone()
+      .applyQuaternion(node.pivot.parent.getWorldQuaternion(new THREE.Quaternion()))
+      .normalize();
+  };
+
+  const hasHinge = (assembly: CarPartId): boolean =>
+    Boolean(assemblies.get(assembly)?.hinge);
+
   const setNodeHidden = (ids: string[]): void => {
     const hidden = new Set(ids);
     for (const node of nodes.values()) {
@@ -637,6 +673,8 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     setNodeTransform,
     setNodeHidden,
     readNodeTransform,
+    nodeOutwardWorld,
+    hasHinge,
     measurePart,
     setPartEdit,
     setFinish,

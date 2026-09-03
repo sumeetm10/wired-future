@@ -72,6 +72,16 @@ export interface WiredEngine {
   onSelect: (handler: (next: Selection | null) => void) => void;
 
   /**
+   * Ctrl-click on a part: run whatever that part DOES. A door swings, the hood
+   * lifts, anything without a hinge pops off and back on. The engine reports
+   * the target and lets the store decide, because "what a door does" is state,
+   * not geometry.
+   */
+  onActuate: (
+    handler: (target: { node: string; assembly: CarPartId; hinged: boolean }) => void,
+  ) => void;
+
+  /**
    * Fires while the gizmo drags an individual mesh rather than the whole
    * object. Separate from onTransformChange so moving a wing mirror never
    * rewrites the car's own placement.

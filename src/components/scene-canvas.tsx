@@ -59,6 +59,36 @@ export default function SceneCanvas({ onReady }: SceneCanvasProps) {
           useWired.getState().setNodeTransform(id, next, 'human', !settled);
         });
 
+        // Ctrl-click runs whatever the part DOES. A hinged assembly swings
+        // open or shut; anything else pops off and back on. Deciding that here
+        // rather than in the engine keeps "what a door does" as state, and
+        // routes it through the same reducer an agent would call.
+        engine.onActuate(({ node, assembly, hinged }) => {
+          if (disposed) return;
+          const store = useWired.getState();
+          const rig = store.carRig;
+
+          if (hinged) {
+            const key =
+              assembly === 'doorLeft'
+                ? 'doorLeft'
+                : assembly === 'doorRight'
+                  ? 'doorRight'
+                  : 'hood';
+            const open = rig[key] > 0.5 ? 0 : 1;
+            store.apply({ carRig: { ...rig, [key]: open } }, 'human');
+            return;
+          }
+
+          const hiddenNow = rig.hiddenNodes.includes(node);
+          store.setNodeHidden(
+            hiddenNow
+              ? rig.hiddenNodes.filter((x) => x !== node)
+              : [...rig.hiddenNodes, node],
+            'human',
+          );
+        });
+
         onReady(engine);
 
         let lastPulseToken = store.pulseToken;

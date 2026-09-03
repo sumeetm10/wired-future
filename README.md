@@ -117,12 +117,23 @@ and four wheels — each on its own pivot.
   pivots on its front vertical edge, the hood on its rear edge.
 - **Parts detach and refit** individually.
 
-### Selecting a part with the mouse
+### Handling a part with the mouse
 
-Click a part on the canvas to select its **assembly** — the whole door. Hold **Ctrl**
-(or Cmd) to drill into the **individual mesh** — that door's handle, its mirror, its window
-gasket. The transform gizmo re-targets to whatever is selected, so dragging moves exactly
-that part and nothing else.
+A plain click selects an assembly. Holding **Ctrl** (or Cmd) over any part turns the pointer
+into a direct manipulator — no mode to switch, no gizmo to aim:
+
+| Gesture | Effect |
+|---|---|
+| Ctrl + **click** | Runs what the part does. Doors swing on their hinge, the hood lifts, anything without a hinge pops off and back on. |
+| Ctrl + **drag** | Pulls that part out along its own outward axis, live, following the drag. |
+| Ctrl + **scroll** | Resizes it. Page zoom is suppressed so the browser does not fight you. |
+
+A drag is told from a click by pointer travel, so orbiting the camera never actuates
+anything by accident, and the camera is frozen for the duration of a part drag.
+
+Gestures mutate the scene directly at frame rate and commit to the store **once**, on
+release. Routing every pointermove through the store re-rendered the 109-row part list and
+re-ran the whole rig sync, which locked the page up mid-drag.
 
 The glTF's 97 named nodes become **109 addressable meshes** once multi-material primitives
 are split. Each sits on its own pivot nested inside its assembly's pivot, so a moved handle

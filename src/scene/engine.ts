@@ -159,6 +159,27 @@ class Engine implements WiredEngine {
     | ((next: TransformState, settled: boolean) => void)
     | null = null;
   private selectHandler: ((next: Selection | null) => void) | null = null;
+  private actuateHandler:
+    | ((target: { node: string; assembly: CarPartId; hinged: boolean }) => void)
+    | null = null;
+
+  /**
+   * Live ctrl-drag on a single part. Held here rather than in the store so the
+   * per-frame maths never round-trips through React.
+   */
+  private partDrag: {
+    node: string;
+    assembly: CarPartId;
+    hinged: boolean;
+    startX: number;
+    startY: number;
+    /** Outward direction projected into screen space, normalised. */
+    screenDirX: number;
+    screenDirY: number;
+    /** Node offset along `outward` when the drag began. */
+    startOffset: number;
+    moved: boolean;
+  } | null = null;
   private nodeTransformHandler:
     | ((id: string, next: NodeTransform, settled: boolean) => void)
     | null = null;
@@ -293,7 +314,11 @@ class Engine implements WiredEngine {
       canvas.addEventListener('webglcontextlost', this.onContextLost);
       canvas.addEventListener('webglcontextrestored', this.onContextRestored);
       canvas.addEventListener('pointerdown', this.onPointerDown);
+      canvas.addEventListener('pointermove', this.onPointerMove);
+      canvas.addEventListener('pointerup', this.onPointerUpCapture);
       canvas.addEventListener('pointerup', this.onPointerUp);
+      // Not passive: ctrl-wheel must be preventable or the page zooms.
+      canvas.addEventListener('wheel', this.onWheel, { passive: false });
       this.canvasWithListeners = canvas;
     }
 
@@ -325,8 +350,192 @@ class Engine implements WiredEngine {
   /* Controls                                                          */
   /* ---------------------------------------------------------------- */
 
+  /** World-space point of a part, projected to canvas pixels. */
+  private projectToScreen(point: THREE.Vector3): { x: number; y: number } | null {
+    if (!this.renderer) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const v = point.clone().project(this.camera);
+    return {
+      x: ((v.x + 1) / 2) * rect.width,
+      y: ((1 - v.y) / 2) * rect.height,
+    };
+  }
+
+  /** Raycast the pointer against the car and report what it hit. */
+  private pickAt(
+    clientX: number,
+    clientY: number,
+  ): { node: string; assembly: CarPartId } | null {
+    if (!this.renderer) return null;
+    const car = this.realCar;
+    if (!car) return null;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+
+    const hits = this.raycaster.intersectObject(car.rig.root, true);
+    if (!hits.length) return null;
+    return car.rig.identify(hits[0].object);
+  }
+
   private onPointerDown = (event: PointerEvent): void => {
     this.pointerDownAt = { x: event.clientX, y: event.clientY };
+    this.partDrag = null;
+
+    // Ctrl (or Cmd) arms direct part manipulation. Without it the pointer
+    // belongs to the camera.
+    if (!(event.ctrlKey || event.metaKey)) return;
+
+    const car = this.realCar;
+    const found = this.pickAt(event.clientX, event.clientY);
+    if (!car || !found) return;
+
+    const outward = car.rig.nodeOutwardWorld(found.node);
+    const current = car.rig.readNodeTransform(found.node);
+    if (!outward || !current) return;
+
+    // Project the part's outward axis into screen space so dragging "away
+    // from the car" always pushes the part out, whatever the camera angle.
+    const pivot = car.rig.pivotFor('node', found.node);
+    const origin = pivot
+      ? pivot.getWorldPosition(new THREE.Vector3())
+      : new THREE.Vector3();
+    const a = this.projectToScreen(origin);
+    const b = this.projectToScreen(origin.clone().add(outward));
+    let dx = 0;
+    let dy = -1;
+    if (a && b) {
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      const len = Math.hypot(vx, vy);
+      if (len > 0.001) {
+        dx = vx / len;
+        dy = vy / len;
+      }
+    }
+
+    const startOffset =
+      current.x * outward.x + current.y * outward.y + current.z * outward.z;
+
+    this.partDrag = {
+      node: found.node,
+      assembly: found.assembly,
+      hinged: car.rig.hasHinge(found.assembly),
+      startX: event.clientX,
+      startY: event.clientY,
+      screenDirX: dx,
+      screenDirY: dy,
+      startOffset,
+      moved: false,
+    };
+
+    // The camera must not orbit while a part is being pulled out.
+    if (this.orbitControls) this.orbitControls.enabled = false;
+    this.renderer?.domElement.setPointerCapture?.(event.pointerId);
+  };
+
+  /** Pixels of drag per world unit of travel. Tuned by feel. */
+  private static readonly DRAG_PIXELS_PER_UNIT = 90;
+
+  private onPointerMove = (event: PointerEvent): void => {
+    const drag = this.partDrag;
+    const car = this.realCar;
+    if (!drag || !car) return;
+
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    drag.moved = true;
+
+    // Component of the drag along the part's outward axis on screen.
+    const along =
+      (dx * drag.screenDirX + dy * drag.screenDirY) /
+      Engine.DRAG_PIXELS_PER_UNIT;
+
+    const outward = car.rig.nodeOutwardWorld(drag.node);
+    if (!outward) return;
+
+    const offset = Math.max(-4, Math.min(12, drag.startOffset + along));
+    const live = car.rig.readNodeTransform(drag.node);
+    if (!live) return;
+
+    // Apply straight to the scene. Routing every pointermove through the store
+    // re-renders the 109-row part list and re-runs the whole rig sync, which
+    // locks the page up mid-drag. The store is written once, on release.
+    car.rig.setNodeTransform(drag.node, {
+      ...live,
+      x: outward.x * offset,
+      y: outward.y * offset,
+      z: outward.z * offset,
+    });
+  };
+
+  private onPointerUpCapture = (event: PointerEvent): void => {
+    const drag = this.partDrag;
+    this.partDrag = null;
+    this.renderer?.domElement.releasePointerCapture?.(event.pointerId);
+
+    if (this.orbitControls) {
+      this.orbitControls.enabled = !this.cameraState.autoOrbit;
+    }
+
+    if (!drag) return;
+
+    if (drag.moved) {
+      // Settle: one trace line for the whole drag.
+      const live = this.realCar?.rig.readNodeTransform(drag.node);
+      if (live) this.nodeTransformHandler?.(drag.node, live, true);
+      return;
+    }
+
+    // No travel: this was a ctrl-CLICK, so actuate the part instead.
+    this.actuateHandler?.({
+      node: drag.node,
+      assembly: drag.assembly,
+      hinged: drag.hinged,
+    });
+  };
+
+  /**
+   * Ctrl-wheel over a part scales it. preventDefault is essential: without it
+   * Chrome zooms the whole page instead, which is jarring and undoes the layout.
+   */
+  private onWheel = (event: WheelEvent): void => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const car = this.realCar;
+    if (!car) return;
+
+    const found = this.pickAt(event.clientX, event.clientY);
+    if (!found) return;
+
+    event.preventDefault();
+
+    const live = car.rig.readNodeTransform(found.node);
+    if (!live) return;
+
+    const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
+    const scale = Math.max(0.1, Math.min(6, live.scale * factor));
+
+    // Direct again: a wheel gesture is a burst of events, and one store write
+    // each would stutter. Commit once the wheel goes quiet.
+    car.rig.setNodeTransform(found.node, { ...live, scale });
+
+    window.clearTimeout(this.wheelSettleTimer);
+    this.wheelSettleTimer = window.setTimeout(() => {
+      const settled = this.realCar?.rig.readNodeTransform(found.node);
+      if (settled) this.nodeTransformHandler?.(found.node, settled, true);
+    }, 350);
+  };
+
+  private wheelSettleTimer = 0;
+
+  onActuate = (
+    handler: (target: { node: string; assembly: CarPartId; hinged: boolean }) => void,
+  ): void => {
+    this.actuateHandler = handler;
   };
 
   /**
@@ -337,6 +546,8 @@ class Engine implements WiredEngine {
   private onPointerUp = (event: PointerEvent): void => {
     const down = this.pointerDownAt;
     this.pointerDownAt = null;
+    // A ctrl gesture is handled by onPointerUpCapture, not here.
+    if (event.ctrlKey || event.metaKey) return;
     if (!down || !this.renderer || !this.container) return;
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
 
@@ -1062,7 +1273,11 @@ class Engine implements WiredEngine {
     }
     if (this.canvasWithListeners) {
       this.canvasWithListeners.removeEventListener('pointerdown', this.onPointerDown);
+      this.canvasWithListeners.removeEventListener('pointermove', this.onPointerMove);
+      this.canvasWithListeners.removeEventListener('pointerup', this.onPointerUpCapture);
       this.canvasWithListeners.removeEventListener('pointerup', this.onPointerUp);
+      this.canvasWithListeners.removeEventListener('wheel', this.onWheel);
+      window.clearTimeout(this.wheelSettleTimer);
       this.canvasWithListeners.removeEventListener('webglcontextlost', this.onContextLost);
       this.canvasWithListeners.removeEventListener(
         'webglcontextrestored',

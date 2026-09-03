@@ -1480,3 +1480,23 @@ textarea.wf-input {
   text-transform: uppercase;
   color: var(--wf-dim);
 }
+
+/* Gesture cheat-sheet in the part inspector. */
+.wf-gestures {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--wf-dim);
+}
+
+.wf-gestures strong {
+  color: var(--wf-cyan);
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 10px;
+}

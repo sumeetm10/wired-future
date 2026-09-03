@@ -149,9 +149,25 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
           }
         >
           <p className="wf-note">
-            Click a part on the canvas to select its assembly. Hold{' '}
-            <strong>Ctrl</strong> (or Cmd) to drill into the individual mesh —
-            a handle, a wiper, a brake disc. {nodes.length || 97} parts total.
+            Click a part to select its assembly. Then, holding{' '}
+            <strong>Ctrl</strong> (or Cmd) over any part:
+          </p>
+          <ul className="wf-gestures">
+            <li>
+              <strong>click</strong> — run what it does. Doors swing, the hood
+              lifts, anything else pops off and back on.
+            </li>
+            <li>
+              <strong>drag</strong> — pull that part out along its own axis,
+              away from the car.
+            </li>
+            <li>
+              <strong>scroll</strong> — resize it.
+            </li>
+          </ul>
+          <p className="wf-note">
+            {nodes.length || 109} parts, down to individual handles, wipers and
+            brake discs.
           </p>
 
           <div className="wf-selected">
