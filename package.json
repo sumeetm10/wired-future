@@ -2,6 +2,7 @@
   "name": "wired-future",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Agent-native 3D creative canvas. Human and AI agent share one screen via WebMCP.",
   "scripts": {
     "dev": "next dev",

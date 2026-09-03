@@ -326,3 +326,12 @@ src/
   them with a seeded PRNG so raising the count adds nodes without shuffling the existing ones.
 - `engine.apply()` is called on every store change and diffs against a cached previous state, so
   dragging the colour picker does not rebuild the model.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+The CarConcept glTF is CC BY 4.0 (KhronosGroup/glTF-Sample-Assets, by Eric Chadwick from a
+public-domain model, attribution to Darmstadt Graphics Group GmbH). Chakra Petch and
+JetBrains Mono are under the SIL Open Font License 1.1. Depth Anything V2 Small and CLIP
+weights are not bundled; they stream from the Hugging Face CDN at runtime.
