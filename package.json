@@ -1,0 +1,31 @@
+{
+  "name": "wired-future",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agent-native 3D creative canvas. Human and AI agent share one screen via WebMCP.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "cross-env NEXT_DIST_DIR=.next-build next build && npm run export:copy",
+    "build:local": "cross-env NEXT_DIST_DIR=.next-build NEXT_PUBLIC_BASE_PATH= next build && npm run export:copy",
+    "export:copy": "node -e \"const fs=require('fs');fs.rmSync('out',{recursive:true,force:true});fs.cpSync('.next-build','out',{recursive:true});if(!fs.existsSync('out/index.html'))throw new Error('export missing index.html');console.log('exported -> out/')\"",
+    "start": "npx serve out"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.169.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.169.0",
+    "cross-env": "^7.0.3",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.0"
+  }
+}

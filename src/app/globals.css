@@ -1,0 +1,1390 @@
+@import "tailwindcss";
+
+/* ==================================================================== */
+/* Design tokens                                                        */
+/* ==================================================================== */
+
+@theme {
+  --color-wf-bg: #0b071e;
+  --color-wf-cyan: #00f0ff;
+  --color-wf-magenta: #ff2bd6;
+  --color-wf-violet: #8b5cff;
+  --color-wf-amber: #ffb347;
+  --color-wf-green: #37f5a0;
+  --color-wf-text: #cfe9ff;
+  --color-wf-dim: #6d7fa8;
+
+  /* Real faces, self-hosted by next/font (see src/app/layout.tsx). The stacks
+     below are the fallbacks used while the woff2 loads and if it fails. */
+  --font-mono:
+    var(--font-jetbrains-mono), ui-monospace, "SFMono-Regular", "Fira Code",
+    Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Angular techno face for headings, labels and controls. */
+  --font-display:
+    var(--font-chakra-petch), "Chakra Petch", "Rajdhani", "Segoe UI",
+    system-ui, sans-serif;
+}
+
+:root {
+  --wf-bg: #0b071e;
+  --wf-cyan: #00f0ff;
+  --wf-magenta: #ff2bd6;
+  --wf-violet: #8b5cff;
+  --wf-amber: #ffb347;
+  --wf-green: #37f5a0;
+
+  --wf-text: #cfe9ff;
+  --wf-dim: #6d7fa8;
+
+  --wf-panel: rgba(13, 8, 34, 0.66);
+  --wf-panel-top: rgba(24, 14, 58, 0.72);
+  --wf-panel-solid: rgba(8, 5, 24, 0.94);
+  --wf-border: rgba(0, 240, 255, 0.28);
+  --wf-border-soft: rgba(139, 92, 255, 0.24);
+  --wf-track: rgba(0, 240, 255, 0.14);
+
+  --wf-glow-cyan: 0 0 26px rgba(0, 240, 255, 0.18);
+  --wf-glow-magenta: 0 0 26px rgba(255, 43, 214, 0.22);
+
+  /* Layered chrome. Canvas 0, atmosphere 5, panels 10, status bar 20, badge 30. */
+  --wf-z-canvas: 0;
+  --wf-z-fx: 5;
+  --wf-z-panel: 10;
+  --wf-z-status: 20;
+  --wf-z-badge: 30;
+
+  /* Reserved height of the bottom terminal strip. Panels subtract this. */
+  --wf-status-h: 92px;
+  --wf-gap: 8px;
+  /* Vertical room reserved for the badge dock above the panels. */
+  --wf-dock-top: 156px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --wf-status-h: 124px;
+    --wf-gap: 16px;
+    --wf-dock-top: 186px;
+  }
+}
+
+/* ==================================================================== */
+/* Base                                                                 */
+/* ==================================================================== */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--wf-bg);
+  color: var(--wf-text);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Display face on chrome: headings, labels, buttons, badges. The trace log,
+   the raw tool-call textarea and every number stay monospace - those are code,
+   and code should look like code. */
+.wf-title,
+.wf-panel__title,
+.wf-label,
+.wf-button,
+.wf-badge__line,
+.wf-kicker,
+.wf-tagline,
+.wf-note,
+.wf-input,
+select.wf-input {
+  font-family: var(--font-display);
+}
+
+.wf-readout,
+.wf-hex,
+.wf-log,
+.wf-log__ts,
+.wf-log__msg,
+.wf-tag,
+.wf-result__text,
+textarea.wf-input {
+  font-family: var(--font-mono);
+}
+
+body {
+  overscroll-behavior: none;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--wf-cyan);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: rgba(255, 43, 214, 0.38);
+  color: #ffffff;
+}
+
+/* ==================================================================== */
+/* Ambience                                                             */
+/* ==================================================================== */
+
+@keyframes wf-scanline {
+  from {
+    transform: translateY(-120%);
+  }
+  to {
+    transform: translateY(120%);
+  }
+}
+
+@keyframes wf-grid-pulse {
+  0%,
+  100% {
+    opacity: 0.32;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+@keyframes wf-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.22;
+  }
+}
+
+@keyframes wf-charge {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 43, 214, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 18px rgba(255, 43, 214, 0);
+  }
+}
+
+/* Decorative full-bleed overlay. Purely cosmetic, never interactive. */
+.wf-scanlines {
+  position: fixed;
+  inset: 0;
+  z-index: var(--wf-z-fx);
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 240, 255, 0.045) 0px,
+    rgba(0, 240, 255, 0.045) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+.wf-scanlines::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  height: 26%;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(0, 240, 255, 0.06),
+    transparent
+  );
+  animation: wf-scanline 7.5s linear infinite;
+}
+
+.wf-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: var(--wf-z-fx);
+  pointer-events: none;
+  background: radial-gradient(
+    120% 90% at 50% 45%,
+    transparent 40%,
+    rgba(3, 1, 12, 0.72) 100%
+  );
+}
+
+/* ==================================================================== */
+/* Panel shell                                                          */
+/* ==================================================================== */
+
+.wf-panel {
+  position: relative;
+  border-radius: 14px;
+  border: 1px solid var(--wf-border);
+  background: linear-gradient(180deg, var(--wf-panel-top), var(--wf-panel));
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    var(--wf-glow-cyan),
+    0 18px 50px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: var(--wf-text);
+  overflow: hidden;
+}
+
+.wf-panel--accent {
+  border-color: rgba(255, 43, 214, 0.32);
+  box-shadow:
+    var(--wf-glow-magenta),
+    0 18px 50px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.wf-panel--muted {
+  border-color: rgba(109, 127, 168, 0.3);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Opacity dimming only where a hover can restore it. On touch there is no
+   hover, so a permanently 62%-opaque panel is just low contrast. */
+@media (hover: hover) and (pointer: fine) {
+  .wf-panel--muted {
+    opacity: 0.62;
+  }
+
+  .wf-panel--muted:hover,
+  .wf-panel--muted:focus-within {
+    opacity: 1;
+  }
+}
+
+.wf-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.14);
+  background: linear-gradient(
+    90deg,
+    rgba(0, 240, 255, 0.08),
+    rgba(255, 43, 214, 0.05)
+  );
+}
+
+.wf-panel__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--wf-text);
+}
+
+.wf-panel__body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ==================================================================== */
+/* Typography helpers                                                   */
+/* ==================================================================== */
+
+.wf-label {
+  display: block;
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+}
+
+.wf-note {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--wf-dim);
+  letter-spacing: 0.04em;
+}
+
+.wf-readout {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--wf-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-hex {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--wf-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==================================================================== */
+/* Controls                                                             */
+/* ==================================================================== */
+
+.wf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wf-input {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(4, 2, 16, 0.72);
+  border: 1px solid var(--wf-border-soft);
+  border-radius: 8px;
+  color: var(--wf-text);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  padding: 8px 10px;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.wf-input:hover {
+  border-color: var(--wf-border);
+}
+
+.wf-input:focus {
+  border-color: var(--wf-cyan);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.35);
+}
+
+select.wf-input {
+  background-image: linear-gradient(45deg, transparent 50%, var(--wf-cyan) 50%),
+    linear-gradient(135deg, var(--wf-cyan) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 2px),
+    calc(100% - 11px) calc(50% - 2px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+select.wf-input option {
+  background: #0b071e;
+  color: var(--wf-text);
+}
+
+textarea.wf-input {
+  resize: vertical;
+  min-height: 84px;
+  line-height: 1.5;
+}
+
+/* Colour swatch --------------------------------------------------- */
+
+.wf-color {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--wf-border);
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  flex: 0 0 auto;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.18);
+}
+
+.wf-color::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.wf-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+.wf-color::-moz-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+/* Range ------------------------------------------------------------ */
+
+/* Checkbox — square neon tick, sized to line up with .wf-label text. */
+.wf-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--wf-border);
+  border-radius: 4px;
+  background: rgba(6, 10, 32, 0.75);
+  cursor: pointer;
+  position: relative;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.wf-check:hover {
+  border-color: var(--wf-cyan);
+}
+
+.wf-check:checked {
+  background: rgba(0, 240, 255, 0.16);
+  border-color: var(--wf-cyan);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.35);
+}
+
+.wf-check:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--wf-cyan);
+  border-width: 0 2px 2px 0;
+  transform: rotate(42deg);
+}
+
+.wf-check:focus-visible {
+  outline: 2px solid var(--wf-cyan);
+  outline-offset: 2px;
+}
+
+.wf-range {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  height: 20px;
+  cursor: pointer;
+}
+
+.wf-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.5), var(--wf-track));
+}
+
+.wf-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.5), var(--wf-track));
+}
+
+.wf-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--wf-cyan);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.85);
+  transition: transform 120ms ease;
+}
+
+.wf-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  background: var(--wf-cyan);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.85);
+}
+
+.wf-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+/* Buttons ----------------------------------------------------------- */
+
+.wf-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--wf-text);
+  background: rgba(0, 240, 255, 0.06);
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    border-color 140ms ease,
+    transform 90ms ease;
+}
+
+.wf-button:hover:not(:disabled) {
+  background: rgba(0, 240, 255, 0.14);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.32);
+  border-color: var(--wf-cyan);
+}
+
+.wf-button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.wf-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wf-button.is-active {
+  background: rgba(0, 240, 255, 0.2);
+  border-color: var(--wf-cyan);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.4);
+}
+
+.wf-button--ghost {
+  background: transparent;
+  border-color: rgba(109, 127, 168, 0.4);
+  color: var(--wf-dim);
+}
+
+.wf-button--ghost:hover:not(:disabled) {
+  color: var(--wf-text);
+  background: rgba(109, 127, 168, 0.14);
+  box-shadow: none;
+  border-color: rgba(207, 233, 255, 0.5);
+}
+
+.wf-button--chip {
+  padding: 5px 8px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  border-radius: 999px;
+  border-color: var(--wf-border-soft);
+  color: var(--wf-dim);
+}
+
+.wf-button--chip:hover:not(:disabled) {
+  color: var(--wf-text);
+}
+
+.wf-button--primary {
+  width: 100%;
+  padding: 12px 10px;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: #ffffff;
+  border-color: rgba(255, 43, 214, 0.6);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 43, 214, 0.24),
+    rgba(139, 92, 255, 0.22)
+  );
+  box-shadow: 0 0 22px rgba(255, 43, 214, 0.28);
+}
+
+.wf-button--primary:hover:not(:disabled) {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 43, 214, 0.38),
+    rgba(139, 92, 255, 0.32)
+  );
+  border-color: var(--wf-magenta);
+  box-shadow: 0 0 30px rgba(255, 43, 214, 0.5);
+}
+
+.wf-button--primary.is-charging {
+  animation: wf-charge 900ms ease-out infinite;
+  border-color: var(--wf-magenta);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 43, 214, 0.5),
+    rgba(139, 92, 255, 0.4)
+  );
+}
+
+.wf-chiprow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.wf-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 240, 255, 0.28),
+    transparent
+  );
+  border: 0;
+  margin: 0;
+}
+
+/* ==================================================================== */
+/* Scrollbars                                                           */
+/* ==================================================================== */
+
+.wf-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 240, 255, 0.45) transparent;
+}
+
+.wf-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.wf-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wf-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.38);
+  border-radius: 999px;
+}
+
+.wf-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.62);
+}
+
+/* ==================================================================== */
+/* Docking / responsive layout                                          */
+/* ==================================================================== */
+
+/* Mobile first: badge pinned to the very top, agent simulator just under
+   it, control panel as a bottom sheet sitting on top of the status bar. */
+
+/* ==================================================================== */
+/* Title lockup                                                         */
+/* ==================================================================== */
+
+.wf-topdock {
+  position: fixed;
+  top: var(--wf-gap);
+  left: var(--wf-gap);
+  right: var(--wf-gap);
+  z-index: var(--wf-z-badge);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(660px, calc(100% - var(--wf-gap) * 2));
+  pointer-events: none;
+}
+
+.wf-topdock > * {
+  pointer-events: auto;
+}
+
+.wf-titlecard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wf-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: #eaf6ff;
+  text-shadow:
+    0 0 18px rgba(0, 240, 255, 0.55),
+    0 0 42px rgba(255, 43, 214, 0.25);
+}
+
+.wf-tagline {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--wf-dim);
+}
+
+@media (min-width: 768px) {
+  .wf-title {
+    font-size: 26px;
+  }
+  .wf-tagline {
+    font-size: 12px;
+  }
+}
+
+/* The badge renders its own fixed dock; inside the title lockup it flows. */
+.wf-badge-dock.wf-badge-inline {
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+  z-index: auto;
+}
+
+.wf-badge-dock {
+  position: fixed;
+  top: var(--wf-gap);
+  left: var(--wf-gap);
+  right: var(--wf-gap);
+  z-index: var(--wf-z-badge);
+}
+
+.wf-dock {
+  position: fixed;
+  left: var(--wf-gap);
+  right: var(--wf-gap);
+  z-index: var(--wf-z-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.wf-dock--right {
+  top: var(--wf-dock-top);
+}
+
+.wf-dock--left {
+  bottom: calc(var(--wf-status-h) + var(--wf-gap));
+}
+
+.wf-dock > .wf-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.wf-dock .wf-panel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Keeps both sheets open at once on a phone without them colliding. */
+  max-height: 24vh;
+}
+
+@media (min-width: 768px) {
+  .wf-badge-dock {
+    right: auto;
+    width: 332px;
+  }
+
+  .wf-dock {
+    right: auto;
+    width: 332px;
+  }
+
+  .wf-dock--left {
+    top: var(--wf-dock-top);
+    bottom: auto;
+    max-height: calc(
+      100vh - var(--wf-dock-top) - var(--wf-status-h) - var(--wf-gap)
+    );
+    max-height: calc(
+      100dvh - var(--wf-dock-top) - var(--wf-status-h) - var(--wf-gap)
+    );
+  }
+
+  .wf-dock--right {
+    top: var(--wf-gap);
+    left: auto;
+    right: var(--wf-gap);
+    width: 372px;
+    max-height: calc(100vh - var(--wf-status-h) - var(--wf-gap) * 2);
+    max-height: calc(100dvh - var(--wf-status-h) - var(--wf-gap) * 2);
+  }
+
+  .wf-dock .wf-panel__body {
+    max-height: none;
+  }
+}
+
+/* Collapse behaviour: below the breakpoint the body only shows when the
+   panel is open; above it the body is always rendered. */
+
+.wf-collapsible {
+  display: none;
+}
+
+.wf-collapsible.is-open {
+  display: flex;
+}
+
+.wf-only-narrow {
+  display: inline-flex;
+}
+
+.wf-only-wide {
+  display: none;
+}
+
+/* Block-level twin of .wf-only-wide, for paragraphs. The inline-flex variant
+   turns a <p> into a flex container, which is the wrong box for prose. */
+.wf-only-wide-block {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .wf-only-narrow {
+    display: none;
+  }
+
+  .wf-only-wide {
+    display: inline-flex;
+  }
+
+  .wf-only-wide-block {
+    display: block;
+  }
+}
+
+/* ==================================================================== */
+/* Status bar / trace terminal                                          */
+/* ==================================================================== */
+
+.wf-statusbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--wf-status-h);
+  z-index: var(--wf-z-status);
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--wf-border);
+  background: linear-gradient(
+    180deg,
+    rgba(8, 5, 24, 0.82),
+    var(--wf-panel-solid)
+  );
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    0 -1px 0 rgba(0, 240, 255, 0.16),
+    0 -18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.wf-statusbar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.12);
+}
+
+.wf-statusbar__legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.wf-statusbar__legend .wf-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.wf-statusbar__legend .wf-label.wf-only-wide {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .wf-statusbar__legend .wf-label.wf-only-wide {
+    display: inline-flex;
+  }
+}
+
+.wf-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 12px 8px;
+  list-style: none;
+}
+
+.wf-log__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0 1px 8px;
+  border-left: 2px solid transparent;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-log__row--agent {
+  border-left-color: var(--wf-magenta);
+  background: linear-gradient(90deg, rgba(255, 43, 214, 0.1), transparent 55%);
+}
+
+.wf-log__row--human {
+  border-left-color: rgba(0, 240, 255, 0.35);
+}
+
+.wf-log__ts {
+  color: rgba(109, 127, 168, 0.85);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.wf-log__msg {
+  color: var(--wf-text);
+}
+
+.wf-tag {
+  flex: 0 0 auto;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.wf-tag--human {
+  color: var(--wf-cyan);
+}
+
+.wf-tag--agent {
+  color: var(--wf-magenta);
+  text-shadow: 0 0 10px rgba(255, 43, 214, 0.55);
+}
+
+.wf-tag--system {
+  color: var(--wf-dim);
+}
+
+.wf-log__empty {
+  color: var(--wf-dim);
+  font-size: 11.5px;
+  padding-left: 10px;
+}
+
+/* ==================================================================== */
+/* Status dot                                                           */
+/* ==================================================================== */
+
+.wf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--wf-dim);
+  box-shadow: 0 0 8px currentColor;
+}
+
+.wf-dot--live {
+  background: var(--wf-green);
+  color: var(--wf-green);
+  box-shadow: 0 0 10px rgba(55, 245, 160, 0.9);
+  animation: wf-blink 1.6s ease-in-out infinite;
+}
+
+.wf-dot--checking {
+  background: var(--wf-dim);
+  animation: wf-blink 1.1s ease-in-out infinite;
+}
+
+.wf-dot--offline {
+  background: var(--wf-amber);
+  color: var(--wf-amber);
+  box-shadow: 0 0 10px rgba(255, 179, 71, 0.75);
+}
+
+.wf-badge {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.wf-badge__dot {
+  margin-top: 4px;
+}
+
+.wf-badge__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wf-badge__line {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  line-height: 1.5;
+}
+
+.wf-badge__line--live {
+  color: var(--wf-green);
+}
+
+.wf-badge__line--offline {
+  color: var(--wf-amber);
+}
+
+.wf-badge__line--checking {
+  color: var(--wf-dim);
+}
+
+.wf-badge__count {
+  color: var(--wf-magenta);
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-badge__hint {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--wf-dim);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* ==================================================================== */
+/* Simulator result surface                                             */
+/* ==================================================================== */
+
+.wf-result {
+  border: 1px solid var(--wf-border-soft);
+  border-radius: 10px;
+  background: rgba(4, 2, 16, 0.66);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wf-result--error {
+  border-color: rgba(255, 92, 92, 0.55);
+}
+
+.wf-result__text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--wf-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-result__img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid var(--wf-border);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.2);
+}
+
+.wf-kicker {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--wf-magenta);
+}
+
+/* ==================================================================== */
+/* Reduced motion                                                       */
+/* ==================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-scanlines::after,
+  .wf-dot--live,
+  .wf-dot--checking,
+  .wf-button--primary.is-charging {
+    animation: none !important;
+  }
+
+  .wf-scanlines {
+    display: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ==================================================================== */
+/* Photo to 3D dock                                                     */
+/* ==================================================================== */
+
+/*
+ * Third dock. The left rail is bottom-anchored and the right rail is
+ * top-anchored, so this one sits under the right rail and above the status bar.
+ * Below 768px all three collapse to chips and stack instead.
+ */
+.wf-dock--photo {
+  bottom: calc(var(--wf-status-h) + var(--wf-gap));
+}
+
+@media (min-width: 768px) {
+  .wf-dock--photo {
+    left: auto;
+    right: var(--wf-gap);
+    width: min(340px, 32vw);
+  }
+}
+
+.wf-panel--refused {
+  border-color: rgba(255, 179, 71, 0.45);
+}
+
+.wf-drop {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 108px;
+  padding: 10px;
+  border: 1px dashed var(--wf-border);
+  border-radius: 12px;
+  background: rgba(6, 10, 32, 0.55);
+  color: var(--wf-dim);
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.wf-drop:hover:not(:disabled),
+.wf-drop.is-dragging {
+  border-color: var(--wf-cyan);
+  border-style: solid;
+  background: rgba(0, 240, 255, 0.06);
+  box-shadow: 0 0 22px rgba(0, 240, 255, 0.22);
+  color: var(--wf-text);
+}
+
+.wf-drop:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.wf-drop:focus-visible {
+  outline: 2px solid var(--wf-cyan);
+  outline-offset: 2px;
+}
+
+.wf-drop__thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 132px;
+  border-radius: 8px;
+}
+
+.wf-drop__hint {
+  padding: 0 8px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.wf-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(109, 127, 168, 0.24);
+  overflow: hidden;
+}
+
+.wf-progress__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--wf-cyan), var(--wf-magenta));
+  transition: width 200ms ease;
+}
+
+.wf-progress__fill.is-indeterminate {
+  width: 38%;
+  animation: wf-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes wf-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.wf-note--refused {
+  color: var(--wf-amber);
+}
+
+.wf-note--error {
+  color: var(--wf-magenta);
+}
+
+.wf-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-progress__fill.is-indeterminate {
+    animation: none;
+    width: 100%;
+    opacity: 0.55;
+  }
+}
+
+/* ==================================================================== */
+/* Right rail — simulator + photo panel share one scrolling column      */
+/* ==================================================================== */
+
+.wf-rail {
+  position: fixed;
+  top: var(--wf-dock-top);
+  left: var(--wf-gap);
+  right: var(--wf-gap);
+  z-index: var(--wf-z-panel);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wf-gap);
+  max-height: calc(
+    100vh - var(--wf-dock-top) - var(--wf-status-h) - var(--wf-gap)
+  );
+  max-height: calc(
+    100dvh - var(--wf-dock-top) - var(--wf-status-h) - var(--wf-gap)
+  );
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+
+/* Docks inside the rail flow instead of pinning themselves to the viewport. */
+.wf-rail > .wf-dock {
+  position: static;
+  inset: auto;
+  width: 100%;
+  flex: 0 0 auto;
+  /* A flex child defaults to min-height:auto, which refuses to shrink and
+     lets a tall panel push its sibling off the bottom of the rail. */
+  min-height: 0;
+}
+
+@media (min-width: 768px) {
+  .wf-rail--right {
+    left: auto;
+    width: min(340px, 32vw);
+  }
+}
+
+/* ==================================================================== */
+/* Minimise                                                             */
+/* ==================================================================== */
+
+/*
+ * Every panel collapses to its title bar at any width, so the canvas can be
+ * cleared down to just the object. `.wf-only-narrow` used to hide these chips
+ * above 768px; the toggles now use `.wf-chip-toggle` and are always shown.
+ */
+.wf-chip-toggle {
+  min-width: 62px;
+  justify-content: center;
+}
+
+/* A collapsed dock must not keep reserving the full rail height. */
+.wf-dock:has(.wf-collapsible:not(.is-open)) .wf-panel {
+  padding-bottom: 0;
+}
+
+.wf-statusbar.is-collapsed {
+  height: auto;
+}
+
+.wf-statusbar.is-collapsed .wf-log {
+  display: none;
+}
+
+/* Part chips: two columns of small toggles, lit when the part is fitted. */
+.wf-partgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.wf-partgrid .wf-button {
+  width: 100%;
+  justify-content: center;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 6px 4px;
+}
+
+/* Plain-English command row: input grows, button hugs its label.
+   .wf-button--primary is width:100% (it is normally a full-width block), and
+   with flex-basis:auto that made the button claim the whole row and squeeze the
+   input to nothing. Both widths are reset to auto here so flex can do its job. */
+.wf-inline {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+
+.wf-inline > .wf-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.wf-inline > .wf-button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 76px;
+  padding: 8px 16px;
+  align-self: stretch;
+}
