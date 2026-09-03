@@ -101,9 +101,23 @@ export function buildPhotoRelief(
 
   const material = new THREE.MeshStandardMaterial({
     map: texture,
-    roughness: 0.82,
-    metalness: 0.05,
+    // The photo is also its own emissive map. The stage is lit by two strongly
+    // coloured point lights, and a purely lit material would render a white
+    // football in red and green. Emissive carries the true colours through
+    // while the map still takes some shading, so the relief keeps its depth.
+    emissiveMap: texture,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.85,
+    roughness: 0.9,
+    metalness: 0.0,
     side: THREE.DoubleSide,
+    // Cut-out PNGs carry the subject silhouette in alpha. alphaTest discards
+    // the transparent pixels, leaving the object instead of a rectangular slab.
+    // Deliberately NOT transparent:true - a displaced surface rendered in the
+    // transparent pass sorts per-object, not per-fragment, so folds in the
+    // relief draw over each other. Alpha-test keeps it in the opaque pass.
+    transparent: false,
+    alphaTest: 0.35,
   });
 
   const mesh = new THREE.Mesh(geometry, material);

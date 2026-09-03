@@ -94,7 +94,10 @@ function resampleColors(
       out[to] = rgba[from];
       out[to + 1] = rgba[from + 1];
       out[to + 2] = rgba[from + 2];
-      out[to + 3] = 255;
+      // Keep the source alpha. A cut-out PNG carries the subject's silhouette
+      // in its alpha channel, and forcing it opaque reconstructs the empty
+      // background as surface too - a ball comes out as a slab.
+      out[to + 3] = rgba[from + 3];
     }
   }
   return out;
