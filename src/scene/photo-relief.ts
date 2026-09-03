@@ -41,11 +41,82 @@ function sampleDepth(
   return Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Estimate which depth counts as "background" and cut it away.
+ *
+ * Alpha only helps for a cut-out PNG. A photo, or a screenshot of a cut-out
+ * with the checkerboard baked in, is fully opaque, so the empty surround gets
+ * reconstructed as surface and the subject ends up embedded in a slab.
+ *
+ * Depth knows better. Whatever sits around the edge of the frame is almost
+ * always background, and the model puts it far away. Taking the median depth
+ * of a border ring gives a threshold that needs no tuning per image, and the
+ * subject survives because it is nearer than its own surroundings.
+ *
+ * Writes alpha 0 into `colors` for background pixels; the material alpha-tests
+ * them out.
+ */
+function cutBackgroundByDepth(
+  depth: Float32Array,
+  colors: Uint8ClampedArray,
+  width: number,
+  height: number,
+): number {
+  const ring: number[] = [];
+  const band = Math.max(1, Math.round(Math.min(width, height) * 0.04));
+
+  for (let y = 0; y < height; y += 1) {
+    const edgeRow = y < band || y >= height - band;
+    for (let x = 0; x < width; x += 1) {
+      if (edgeRow || x < band || x >= width - band) {
+        ring.push(depth[y * width + x]);
+      }
+    }
+  }
+  if (ring.length < 16) return 0;
+
+  ring.sort((a, b) => a - b);
+  const median = ring[ring.length >> 1];
+
+  // Spread of the whole image decides how much margin the threshold needs. A
+  // flat image has no foreground to find, so leave it alone.
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < depth.length; i += 1) {
+    const d = depth[i];
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+  }
+  const spread = hi - lo;
+  if (spread < 0.15) return 0;
+
+  const threshold = median + spread * 0.12;
+
+  let cut = 0;
+  for (let i = 0; i < depth.length; i += 1) {
+    if (depth[i] <= threshold) {
+      colors[i * 4 + 3] = 0;
+      cut += 1;
+    }
+  }
+
+  // If nearly everything would go, the subject fills the frame and the border
+  // was not background after all. Undo rather than delete the whole image.
+  if (cut > depth.length * 0.9) {
+    for (let i = 0; i < depth.length; i += 1) colors[i * 4 + 3] = 255;
+    return 0;
+  }
+  return cut;
+}
+
 export function buildPhotoRelief(
   input: PhotoReliefInput,
   gridHex: string,
 ): ModelHandle {
-  const { width, height, depth, colors } = input;
+  const { width, height, depth } = input;
+  // Copy first: the cut writes alpha, and the caller's buffer is not ours.
+  const colors = new Uint8ClampedArray(input.colors);
+  cutBackgroundByDepth(depth, colors, width, height);
 
   const group = new THREE.Group();
   group.name = 'wired-photo-relief';
