@@ -59,6 +59,7 @@ export function StatusBar() {
 
   return (
     <section
+      id="tour-trace"
       className={'wf-statusbar' + (open ? '' : ' is-collapsed')}
       aria-label="Action trace"
     >

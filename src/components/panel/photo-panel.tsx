@@ -94,6 +94,7 @@ export function PhotoPanel({ getEngine }: PhotoPanelProps) {
   return (
     <section className="wf-dock wf-dock--photo" aria-label="Photo to 3D">
       <div
+        id="tour-photo"
         className={
           'wf-panel' + (status === 'rejected' ? ' wf-panel--refused' : '')
         }

@@ -1500,3 +1500,151 @@ textarea.wf-input {
   text-transform: uppercase;
   font-size: 10px;
 }
+
+/* ==================================================================== */
+/* Spotlight tour                                                       */
+/* ==================================================================== */
+
+/*
+ * The ring is the hole. Its 9999px-spread shadow is the dim over the rest
+ * of the page, so moving the ring moves the dim with it. Portalled to body
+ * to escape the panels' backdrop-filter containing blocks.
+ */
+.wf-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  font-family: var(--font-display);
+}
+
+.wf-tour-ring {
+  position: fixed;
+  pointer-events: none;
+  border-radius: 16px;
+  box-shadow:
+    0 0 0 2px var(--wf-cyan),
+    0 0 22px rgba(0, 240, 255, 0.55),
+    0 0 0 9999px rgba(4, 2, 14, 0.74);
+  transition:
+    top 0.3s ease,
+    left 0.3s ease,
+    width 0.3s ease,
+    height 0.3s ease;
+}
+
+/* Fallback when a step's target vanished mid-tour. */
+.wf-tour-dim {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 2, 14, 0.74);
+}
+
+.wf-tour-catcher {
+  position: fixed;
+  inset: 0;
+  cursor: pointer;
+}
+
+.wf-tour-tip {
+  position: fixed;
+  width: 300px;
+  box-sizing: border-box;
+  padding: 14px 16px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--wf-border);
+  background: var(--wf-panel-solid);
+  box-shadow:
+    var(--wf-glow-cyan),
+    0 18px 50px rgba(0, 0, 0, 0.6);
+  color: var(--wf-text);
+  cursor: default;
+  transition:
+    top 0.3s ease,
+    left 0.3s ease;
+}
+
+.wf-tour-tip__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.wf-tour-dots {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.wf-tour-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--wf-border-soft);
+}
+
+.wf-tour-dot.is-on {
+  background: var(--wf-cyan);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.8);
+}
+
+.wf-tour-tip__title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--wf-cyan);
+}
+
+.wf-tour-tip__body {
+  margin: 0 0 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--wf-text);
+}
+
+.wf-tour-tip__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-tour-tip__spacer {
+  flex: 1 1 auto;
+}
+
+.wf-tour-tip__actions .wf-button {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.wf-tour-next {
+  padding: 6px 14px;
+  font-size: 10px;
+}
+
+/* Inline chip under the badge; the topdock is a column flex, so stop it stretching. */
+.wf-tour-replay {
+  align-self: flex-start;
+}
+
+/* Stand-in for the WebGL car: where the camera looks. Never interactive. */
+.wf-stage-mark {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: min(52vw, 640px);
+  height: min(50vh, 420px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: var(--wf-z-canvas);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-tour-ring,
+  .wf-tour-tip {
+    transition: none;
+  }
+}

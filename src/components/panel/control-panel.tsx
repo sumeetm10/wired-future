@@ -434,7 +434,7 @@ export function ControlPanel() {
       className="wf-dock wf-dock--left"
       aria-label="Scene control panel"
     >
-      <div className="wf-panel">
+      <div id="tour-controls" className="wf-panel">
         <header className="wf-panel__head">
           <h2 className="wf-panel__title">Control Deck</h2>
           <button

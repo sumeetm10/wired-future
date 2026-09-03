@@ -57,6 +57,7 @@ export function McpBadge({
   return (
     <div className={className ? 'wf-badge-dock ' + className : 'wf-badge-dock'}>
       <div
+        id="tour-badge"
         className={panelClass}
         role="status"
         aria-live="polite"

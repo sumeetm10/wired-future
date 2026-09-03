@@ -140,6 +140,7 @@ export function AgentSimulator({ getEngine }: AgentSimulatorProps) {
       aria-label={connected ? 'Manual tool-call override' : 'Agent simulator'}
     >
       <div
+        id="tour-agent"
         className={
           'wf-panel wf-panel--accent' + (connected ? ' wf-panel--muted' : '')
         }

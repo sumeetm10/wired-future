@@ -9,6 +9,7 @@ import AgentSimulator from '@/components/panel/agent-simulator';
 import PhotoPanel from '@/components/panel/photo-panel';
 import SelectionPanel from '@/components/panel/selection-panel';
 import StatusBar from '@/components/panel/status-bar';
+import WiredTour from '@/components/tours/wired-tour';
 import { useWebMcp } from '@/webmcp/use-webmcp';
 
 export default function WiredFutureApp() {
@@ -34,6 +35,10 @@ export default function WiredFutureApp() {
       <div className="wf-vignette" aria-hidden="true" />
       <div className="wf-scanlines" aria-hidden="true" />
 
+      {/* The car is WebGL, so the tour has no DOM node to point at. This
+          empty box marks where it sits; nothing else uses it. */}
+      <div id="tour-stage" className="wf-stage-mark" aria-hidden="true" />
+
       <div className="wf-topdock">
         <header className="wf-titlecard">
           <h1 className="wf-title">Wired Future</h1>
@@ -44,6 +49,9 @@ export default function WiredFutureApp() {
           </p>
         </header>
         <McpBadge className="wf-badge-inline" />
+        {/* Mounted here so the replay chip flows under the badge; the
+            overlay itself portals to body. */}
+        <WiredTour />
       </div>
 
       <ControlPanel />

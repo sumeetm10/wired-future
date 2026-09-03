@@ -128,7 +128,7 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
 
   return (
     <section className="wf-dock wf-dock--parts" aria-label="Part inspector">
-      <div className="wf-panel">
+      <div id="tour-parts" className="wf-panel">
         <header className="wf-panel__head">
           <h2 className="wf-panel__title">Parts</h2>
           <button
