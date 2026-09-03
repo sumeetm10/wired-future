@@ -586,13 +586,19 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     };
   };
 
+  // Scratch objects: this runs on every pointermove of a part drag, and two
+  // fresh allocations per frame is churn the GC does not need.
+  const scratchOutward = new THREE.Vector3();
+  const scratchQuat = new THREE.Quaternion();
+
   const nodeOutwardWorld = (id: string): THREE.Vector3 | null => {
     const node = nodes.get(id);
     if (!node || !node.pivot.parent) return null;
     node.pivot.parent.updateMatrixWorld(true);
-    return node.outward
-      .clone()
-      .applyQuaternion(node.pivot.parent.getWorldQuaternion(new THREE.Quaternion()))
+    node.pivot.parent.getWorldQuaternion(scratchQuat);
+    return scratchOutward
+      .copy(node.outward)
+      .applyQuaternion(scratchQuat)
       .normalize();
   };
 

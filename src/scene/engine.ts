@@ -150,6 +150,13 @@ class Engine implements WiredEngine {
   private realCar: RealCarHandle | null = null;
   /** Last rig state pushed into the car. Null forces a full re-push. */
   private appliedRig: CarRigState | null = null;
+  /**
+   * The exact CarRigState object last synced. apply() runs on EVERY store
+   * emission - including every trace line - but the store only replaces
+   * carRig when something rig-related actually changed, so an identity check
+   * skips the 109-node reconciliation for the vast majority of calls.
+   */
+  private appliedRigSource: CarRigState | null = null;
   private photoRelief: ModelHandle | null = null;
 
   private orbitControls: OrbitControls | null = null;
@@ -508,8 +515,29 @@ class Engine implements WiredEngine {
     const car = this.realCar;
     if (!car) return;
 
-    const found = this.pickAt(event.clientX, event.clientY);
+    // One scroll gesture fires a burst of events, and each raycast walks every
+    // triangle of the car. Reuse the pick for the length of the gesture unless
+    // the pointer has actually moved somewhere else.
+    const now = performance.now();
+    const reusable =
+      this.lastWheelPick &&
+      now - this.lastWheelPick.at < 500 &&
+      Math.hypot(
+        event.clientX - this.lastWheelPick.x,
+        event.clientY - this.lastWheelPick.y,
+      ) < 12;
+
+    const found = reusable
+      ? this.lastWheelPick!.hit
+      : this.pickAt(event.clientX, event.clientY);
     if (!found) return;
+
+    this.lastWheelPick = {
+      hit: found,
+      x: event.clientX,
+      y: event.clientY,
+      at: now,
+    };
 
     event.preventDefault();
 
@@ -531,6 +559,12 @@ class Engine implements WiredEngine {
   };
 
   private wheelSettleTimer = 0;
+  private lastWheelPick: {
+    hit: { node: string; assembly: CarPartId };
+    x: number;
+    y: number;
+    at: number;
+  } | null = null;
 
   onActuate = (
     handler: (target: { node: string; assembly: CarPartId; hinged: boolean }) => void,
@@ -733,6 +767,7 @@ class Engine implements WiredEngine {
     // Anything mounted that is not the glTF car has no rig to drive.
     this.realCar = null;
     this.appliedRig = null;
+    this.appliedRigSource = null;
     this.model = handle;
     this.ownsModel = owns;
     handle.setColors(this.gridHex, this.accentHex);
@@ -772,6 +807,7 @@ class Engine implements WiredEngine {
         // The rig arrives long after the state that configured it, so replay
         // whatever the store currently says instead of waiting for a change.
         this.appliedRig = null;
+        this.appliedRigSource = null;
         if (this.prev) this.syncRig(this.prev.carRig);
       })
       .catch(() => {
@@ -786,6 +822,10 @@ class Engine implements WiredEngine {
   private syncRig(next: CarRigState): void {
     const car = this.realCar;
     if (!car) return;
+
+    // Same object as last time means nothing rig-related moved.
+    if (next === this.appliedRigSource) return;
+    this.appliedRigSource = next;
 
     const prev = this.appliedRig;
 

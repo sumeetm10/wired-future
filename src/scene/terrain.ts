@@ -35,6 +35,27 @@ export class Terrain {
   private readonly baseY: Float32Array;
   private readonly baseR: Float32Array;
 
+  /**
+   * Per-vertex sin/cos of each wave's SPATIAL argument, plus the distance
+   * falloff. Every term has the form sin(kx + wt), which expands to
+   * sin(kx)cos(wt) + cos(kx)sin(wt) - so the only time-dependent parts are two
+   * scalars per wave, shared by every vertex.
+   *
+   * Evaluating it directly cost 2 sin + 2 cos + 1 exp on each of 12,321
+   * vertices, about 61,600 transcendental calls per frame. Hoisting leaves 8
+   * per frame in total and turns the inner loop into multiply-adds.
+   */
+  private readonly s1: Float32Array;
+  private readonly c1: Float32Array;
+  private readonly s2: Float32Array;
+  private readonly c2: Float32Array;
+  private readonly s3: Float32Array;
+  private readonly c3: Float32Array;
+  private readonly s4: Float32Array;
+  private readonly c4: Float32Array;
+  /** exp(-r * 0.018) * 0.55, folded together since neither depends on time. */
+  private readonly decay: Float32Array;
+
   private amplitude = 1;
   private amplitudeDirty = true;
   /** Wave phase accumulated from (dt * velocity) so velocity changes never jump. */
@@ -71,13 +92,37 @@ export class Terrain {
     this.baseX = new Float32Array(count);
     this.baseY = new Float32Array(count);
     this.baseR = new Float32Array(count);
+    this.s1 = new Float32Array(count);
+    this.c1 = new Float32Array(count);
+    this.s2 = new Float32Array(count);
+    this.c2 = new Float32Array(count);
+    this.s3 = new Float32Array(count);
+    this.c3 = new Float32Array(count);
+    this.s4 = new Float32Array(count);
+    this.c4 = new Float32Array(count);
+    this.decay = new Float32Array(count);
 
     for (let i = 0; i < count; i += 1) {
       const x = this.buffer[i * 3];
       const y = this.buffer[i * 3 + 1];
+      const r = Math.sqrt(x * x + y * y);
       this.baseX[i] = x;
       this.baseY[i] = y;
-      this.baseR[i] = Math.sqrt(x * x + y * y);
+      this.baseR[i] = r;
+
+      const a = x * 0.16;
+      const b = y * 0.19;
+      const c = (x + y) * 0.085;
+      const d = r * 0.22;
+      this.s1[i] = Math.sin(a);
+      this.c1[i] = Math.cos(a);
+      this.s2[i] = Math.sin(b);
+      this.c2[i] = Math.cos(b);
+      this.s3[i] = Math.sin(c);
+      this.c3[i] = Math.cos(c);
+      this.s4[i] = Math.sin(d);
+      this.c4[i] = Math.cos(d);
+      this.decay[i] = Math.exp(-r * 0.018) * 0.55;
     }
 
     // Seed the surface so the very first rendered frame is already sculpted.
@@ -122,22 +167,37 @@ export class Terrain {
     const amp = this.amplitude * AMPLITUDE_GAIN;
     const count = this.position.count;
     const buf = this.buffer;
-    const bx = this.baseX;
-    const by = this.baseY;
-    const br = this.baseR;
+
+    // Eight trig calls for the whole frame, not eight per vertex. Identical
+    // output to the direct form: sin(kx + wt) = sin(kx)cos(wt) + cos(kx)sin(wt),
+    // and cos(kx - wt) = cos(kx)cos(wt) + sin(kx)sin(wt).
+    const sT1 = Math.sin(t * 1.1);
+    const cT1 = Math.cos(t * 1.1);
+    const sT2 = Math.sin(t * 0.85);
+    const cT2 = Math.cos(t * 0.85);
+    const sT3 = Math.sin(t * 0.55);
+    const cT3 = Math.cos(t * 0.55);
+    const sT4 = Math.sin(t * 1.6);
+    const cT4 = Math.cos(t * 1.6);
+
+    const s1 = this.s1;
+    const c1 = this.c1;
+    const s2 = this.s2;
+    const c2 = this.c2;
+    const s3 = this.s3;
+    const c3 = this.c3;
+    const s4 = this.s4;
+    const c4 = this.c4;
+    const decay = this.decay;
 
     // Four layered terms of different frequency, direction and phase so the
     // surface reads as an organic topographic landscape rather than one sheet.
     for (let i = 0; i < count; i += 1) {
-      const x = bx[i];
-      const y = by[i];
-      const r = br[i];
-
       const h =
-        Math.sin(x * 0.16 + t * 1.1) * 0.9 +
-        Math.cos(y * 0.19 - t * 0.85) * 0.75 +
-        Math.sin((x + y) * 0.085 + t * 0.55) * 1.2 +
-        Math.cos(r * 0.22 - t * 1.6) * 0.55 * Math.exp(-r * 0.018);
+        0.9 * (s1[i] * cT1 + c1[i] * sT1) +
+        0.75 * (c2[i] * cT2 + s2[i] * sT2) +
+        1.2 * (s3[i] * cT3 + c3[i] * sT3) +
+        decay[i] * (c4[i] * cT4 + s4[i] * sT4);
 
       buf[i * 3 + 2] = h * amp;
     }
