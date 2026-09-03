@@ -7,6 +7,7 @@ import ControlPanel from '@/components/panel/control-panel';
 import McpBadge from '@/components/panel/mcp-badge';
 import AgentSimulator from '@/components/panel/agent-simulator';
 import PhotoPanel from '@/components/panel/photo-panel';
+import SelectionPanel from '@/components/panel/selection-panel';
 import StatusBar from '@/components/panel/status-bar';
 import { useWebMcp } from '@/webmcp/use-webmcp';
 
@@ -52,6 +53,7 @@ export default function WiredFutureApp() {
           collide at exactly the moment both had content. */}
       <div className="wf-rail wf-rail--right">
         <AgentSimulator getEngine={getEngine} />
+        <SelectionPanel getEngine={getEngine} />
         <PhotoPanel getEngine={getEngine} />
       </div>
       <StatusBar />
