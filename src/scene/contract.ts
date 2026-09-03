@@ -1,4 +1,10 @@
-import type { CarPartId, TransformState, WiredState } from '@/store/use-wired';
+import type {
+  CarPartId,
+  NodeTransform,
+  Selection,
+  TransformState,
+  WiredState,
+} from '@/store/use-wired';
 import type { PartMeasurement } from './part-ops';
 
 export interface SceneSnapshot {
@@ -56,6 +62,31 @@ export interface WiredEngine {
    * the mounted model, or the part is absent from the asset.
    */
   measureCarPart: (id: CarPartId) => PartMeasurement | null;
+
+  /**
+   * Called when the human clicks a part in the viewport. A plain click selects
+   * the whole assembly; Ctrl (or Cmd) drills down to the individual mesh, so a
+   * door handle can be grabbed without first hunting through a list of 97.
+   * Passing null means they clicked empty space and cleared the selection.
+   */
+  onSelect: (handler: (next: Selection | null) => void) => void;
+
+  /**
+   * Fires while the gizmo drags an individual mesh rather than the whole
+   * object. Separate from onTransformChange so moving a wing mirror never
+   * rewrites the car's own placement.
+   */
+  onNodeTransformChange: (
+    handler: (id: string, next: NodeTransform, settled: boolean) => void,
+  ) => void;
+
+  /** Every individually addressable mesh, for the part tree. */
+  listCarNodes: () => Array<{
+    id: string;
+    label: string;
+    assembly: CarPartId;
+    triangles: number;
+  }>;
 
   /** Replace the photo-relief mesh. Switching modelType to 'photo' reveals it. */
   setPhotoRelief: (input: PhotoReliefInput) => void;

@@ -20,6 +20,47 @@ export type CarFinish = 'paint' | 'print';
  * (deliberately, as plain data) from scene/car-rig.ts, which must not be
  * imported here - the store has to stay free of three.js.
  */
+/** Which granularity a click selects: the whole door, or just its handle. */
+export type SelectionLevel = 'assembly' | 'node';
+
+export interface Selection {
+  level: SelectionLevel;
+  /** A CarPartId for 'assembly', or a node id like "doorLeft:BodyDoorLHandle01". */
+  id: string;
+  /** Human label, cached so the UI does not need the rig to render it. */
+  label: string;
+}
+
+/**
+ * A free transform on one of the 97 individual meshes, relative to its rest
+ * pose. Position is an offset, not an absolute, so a node keeps riding its
+ * assembly when the door swings or the car explodes.
+ */
+export interface NodeTransform {
+  x: number;
+  y: number;
+  z: number;
+  rotX: number;
+  rotY: number;
+  rotZ: number;
+  scale: number;
+}
+
+export const IDENTITY_NODE_TRANSFORM: NodeTransform = {
+  x: 0,
+  y: 0,
+  z: 0,
+  rotX: 0,
+  rotY: 0,
+  rotZ: 0,
+  scale: 1,
+};
+
+export const NODE_LIMITS = {
+  offset: { min: -12, max: 12 },
+  scale: { min: 0.1, max: 6 },
+} as const;
+
 /** Engineering materials a part can be re-specified in. */
 export type PartMaterialId =
   | 'steel'
@@ -170,6 +211,12 @@ export interface CarRigState {
   hood: number;
   /** Assemblies currently detached from view. */
   hidden: CarPartId[];
+  /** Individual meshes detached from view, by node id. */
+  hiddenNodes: string[];
+  /** Free transforms on individual meshes, by node id. */
+  nodeTransforms: Record<string, NodeTransform>;
+  /** What the gizmo is currently attached to. */
+  selection: Selection | null;
   /** Per-part reshaping. Absent means the part is untouched. */
   edits: Partial<Record<CarPartId, PartEdit>>;
 }
@@ -204,6 +251,9 @@ export const DEFAULT_STATE: WiredState = {
     doorRight: 0,
     hood: 0,
     hidden: [],
+    hiddenNodes: [],
+    nodeTransforms: {},
+    selection: null,
     edits: {},
   },
   editMode: 'orbit',
@@ -328,6 +378,40 @@ export function sanitizePatch(patch: Partial<WiredState>): Partial<WiredState> {
         if (CAR_PART_IDS.includes(id as CarPartId)) seen.add(id as CarPartId);
       }
       rig.hidden = Array.from(seen);
+    }
+
+    if (Array.isArray(src.hiddenNodes)) {
+      rig.hiddenNodes = Array.from(
+        new Set(src.hiddenNodes.filter((id): id is string => typeof id === 'string')),
+      );
+    }
+
+    if (src.selection !== undefined) {
+      const sel = src.selection;
+      rig.selection =
+        sel &&
+        typeof sel.id === 'string' &&
+        (sel.level === 'assembly' || sel.level === 'node')
+          ? { level: sel.level, id: sel.id, label: String(sel.label ?? sel.id) }
+          : null;
+    }
+
+    if (src.nodeTransforms && typeof src.nodeTransforms === 'object') {
+      const out: Record<string, NodeTransform> = {};
+      for (const [key, value] of Object.entries(src.nodeTransforms)) {
+        if (!value) continue;
+        const t = value as Partial<NodeTransform>;
+        out[key] = {
+          x: clampOr(t.x, NODE_LIMITS.offset, 0),
+          y: clampOr(t.y, NODE_LIMITS.offset, 0),
+          z: clampOr(t.z, NODE_LIMITS.offset, 0),
+          rotX: wrapDegrees(t.rotX),
+          rotY: wrapDegrees(t.rotY),
+          rotZ: wrapDegrees(t.rotZ),
+          scale: clampOr(t.scale, NODE_LIMITS.scale, 1),
+        };
+      }
+      rig.nodeTransforms = out;
     }
 
     if (src.edits && typeof src.edits === 'object') {
@@ -576,6 +660,21 @@ export interface WiredStore extends WiredState {
     silent?: boolean,
   ) => string;
 
+  /** Point the gizmo at a part, or clear the selection. */
+  select: (next: Selection | null, origin: ActionOrigin) => string;
+  /**
+   * Move one of the 97 individual meshes. Like setTransform, `silent` skips the
+   * trace line so a drag does not write one entry per pointer move.
+   */
+  setNodeTransform: (
+    id: string,
+    next: NodeTransform,
+    origin: ActionOrigin,
+    silent?: boolean,
+  ) => string;
+  /** Detach or refit individual meshes by node id. */
+  setNodeHidden: (ids: string[], origin: ActionOrigin) => string;
+
   setPhoto: (patch: Partial<PhotoState>, origin?: ActionOrigin) => void;
   resetPhoto: (origin?: ActionOrigin) => void;
   firePulse: (intensity: number, durationMs: number, origin: ActionOrigin) => string;
@@ -612,6 +711,20 @@ function describe(patch: Partial<WiredState>): string[] {
     if (r.hood !== undefined) bits.push('hood ' + Math.round(r.hood * 100) + '%');
     if (r.hidden) {
       bits.push(r.hidden.length ? 'removed: ' + r.hidden.join(', ') : 'all parts fitted');
+    }
+    if (r.selection !== undefined) {
+      parts.push(r.selection ? 'selected ' + r.selection.label : 'selection cleared');
+    }
+    if (r.hiddenNodes) {
+      bits.push(
+        r.hiddenNodes.length
+          ? r.hiddenNodes.length + ' individual parts removed'
+          : 'no individual parts removed',
+      );
+    }
+    if (r.nodeTransforms) {
+      const moved = Object.keys(r.nodeTransforms).length;
+      bits.push(moved ? moved + ' parts moved by hand' : 'no parts moved');
     }
     if (r.edits) {
       const touched = Object.keys(r.edits);
@@ -773,6 +886,59 @@ export const useWired = create<WiredStore>((set, get) => ({
     return message;
   },
 
+  select: (next, origin) => {
+    set((s) => ({ carRig: { ...s.carRig, selection: next } }));
+    const message = next
+      ? 'selected ' + next.label + (next.level === 'node' ? ' (single part)' : '')
+      : 'selection cleared';
+    get().log(origin, message);
+    return message;
+  },
+
+  setNodeTransform: (id, next, origin, silent = false) => {
+    const patch = sanitizePatch({
+      carRig: {
+        ...get().carRig,
+        nodeTransforms: { ...get().carRig.nodeTransforms, [id]: next },
+      },
+    } as Partial<WiredState>);
+
+    if (patch.carRig?.nodeTransforms) {
+      const clean = patch.carRig.nodeTransforms;
+      set((s) => ({
+        carRig: { ...s.carRig, nodeTransforms: clean },
+        agentActionCount:
+          origin === 'agent' && !silent
+            ? s.agentActionCount + 1
+            : s.agentActionCount,
+      }));
+    }
+
+    const t = get().carRig.nodeTransforms[id];
+    const message = t
+      ? 'moved part ' + id + ' to ' +
+        t.x.toFixed(2) + '/' + t.y.toFixed(2) + '/' + t.z.toFixed(2) +
+        ', scale ' + t.scale.toFixed(2)
+      : 'part ' + id + ' reset';
+
+    if (!silent) get().log(origin, message);
+    return message;
+  },
+
+  setNodeHidden: (ids, origin) => {
+    const unique = Array.from(new Set(ids));
+    set((s) => ({
+      carRig: { ...s.carRig, hiddenNodes: unique },
+      agentActionCount:
+        origin === 'agent' ? s.agentActionCount + 1 : s.agentActionCount,
+    }));
+    const message = unique.length
+      ? unique.length + ' individual part(s) detached'
+      : 'all individual parts refitted';
+    get().log(origin, message);
+    return message;
+  },
+
   setPhoto: (patch, origin) => {
     set((s) => ({ photo: { ...s.photo, ...patch } }));
     if (origin && patch.message) get().log(origin, patch.message);
@@ -798,6 +964,9 @@ export const useWired = create<WiredStore>((set, get) => ({
       carRig: {
         ...s.carRig,
         hidden: [...s.carRig.hidden],
+        hiddenNodes: [...s.carRig.hiddenNodes],
+        nodeTransforms: { ...s.carRig.nodeTransforms },
+        selection: s.carRig.selection ? { ...s.carRig.selection } : null,
         edits: { ...s.carRig.edits },
       },
       editMode: s.editMode,

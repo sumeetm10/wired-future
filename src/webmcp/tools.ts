@@ -24,7 +24,9 @@ import {
   CAR_PART_LABELS,
   EDIT_MODES,
   IDENTITY_EDIT,
+  IDENTITY_NODE_TRANSFORM,
   LIMITS,
+  NODE_LIMITS,
   PART_EDIT_LIMITS,
   PART_MATERIAL_IDS,
   MODEL_TYPES,
@@ -38,6 +40,7 @@ import type {
   CarFinish,
   CarPartId,
   EditMode,
+  NodeTransform,
   PartEdit,
   PartMaterialId,
   ModelType,
@@ -282,13 +285,21 @@ export function describeScene(state: WiredState): string {
   }
   const rigClause = rigBits.length ? 'The car is ' + rigBits.join(', ') + '. ' : '';
 
+  const selectionClause = rig.selection
+    ? 'The person has "' +
+      rig.selection.label +
+      '" selected' +
+      (rig.selection.level === 'node' ? ' as a single part' : '') +
+      '. '
+    : '';
+
   const editing =
     state.editMode === 'orbit'
       ? 'The mouse orbits the camera'
       : 'A ' + state.editMode + ' gizmo is armed on the object';
 
   return (
-    placed + '. ' + editing + '. ' + rigClause +
+    placed + '. ' + editing + '. ' + rigClause + selectionClause +
     'A ' +
     grid +
     ' wireframe landscape ripples at ' +
@@ -1732,6 +1743,291 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
     },
   };
 
+  /* ---------------------------------------------------------------- */
+  /* 17. list_car_parts                                                */
+  /* ---------------------------------------------------------------- */
+
+  const listCarParts: McpToolDescriptor<ToolInput> = {
+    name: 'list_car_parts',
+    description:
+      'Enumerate every individually addressable mesh of the concept car - over a hundred of them, down to individual door handles, wing mirrors, wipers, brake discs, steering wheel spokes and pedals. Returns each part id, its human label and which assembly it belongs to. Call this before place_car_part or detach_car_parts, because those address parts by id and the ids are asset-specific. Optionally filter by assembly or by a substring of the label.',
+    annotations: {
+      title: 'List every car part',
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        assembly: {
+          type: 'string',
+          enum: CAR_PART_IDS,
+          description: 'Only parts belonging to this assembly.',
+        },
+        search: {
+          type: 'string',
+          description:
+            'Case-insensitive substring of the label, e.g. "handle", "wiper", "disc".',
+        },
+      },
+    },
+    execute: (input) => {
+      try {
+        const engine = getEngine();
+        const all = engine ? engine.listCarNodes() : [];
+        if (!all.length) {
+          return failure(
+            'The part list is empty. The glTF concept car must be on stage - call set_car_body with variant "real" and allow a moment for the 11 MB asset to load.',
+          );
+        }
+
+        const raw = (input ?? {}) as { assembly?: string; search?: string };
+        const search = (raw.search ?? '').trim().toLowerCase();
+
+        const matched = all.filter(
+          (n) =>
+            (!raw.assembly || n.assembly === raw.assembly) &&
+            (!search || n.label.toLowerCase().includes(search)),
+        );
+
+        useWired.getState().noteAgentCall();
+        useWired.getState().log('agent', 'listed ' + matched.length + ' car parts');
+
+        const preview = matched
+          .slice(0, 25)
+          .map((n) => n.label + ' (' + n.id + ')')
+          .join('; ');
+
+        return success(
+          matched.length +
+            ' of ' +
+            all.length +
+            ' parts matched. ' +
+            preview +
+            (matched.length > 25 ? ' ... and more, see structuredContent.' : ''),
+          { parts: matched, total: all.length },
+        );
+      } catch (err) {
+        return failure('list_car_parts failed: ' + errorMessage(err));
+      }
+    },
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* 18. select_car_part                                               */
+  /* ---------------------------------------------------------------- */
+
+  const selectCarPart: McpToolDescriptor<ToolInput> = {
+    name: 'select_car_part',
+    description:
+      "Point the on-screen transform gizmo at a part, so the PERSON can drag it by hand. Selecting an assembly (a whole door) or a single mesh (that door's handle) changes what their mouse grabs. This is a handoff: use it when you want them to position something themselves, and say so. Pass nothing to clear the selection.",
+    annotations: { title: 'Select a part', idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        assembly: {
+          type: 'string',
+          enum: CAR_PART_IDS,
+          description: 'Select a whole assembly. Ignored when part is given.',
+        },
+        part: {
+          type: 'string',
+          description:
+            'A part id from list_car_parts, for single-mesh selection. Wins over assembly.',
+        },
+      },
+    },
+    execute: (input) => {
+      try {
+        const raw = (input ?? {}) as { assembly?: string; part?: string };
+        const store = useWired.getState();
+
+        if (raw.part) {
+          const node = (getEngine()?.listCarNodes() ?? []).find(
+            (n) => n.id === raw.part,
+          );
+          if (!node) {
+            return failure(
+              'No part with id "' + raw.part + '". Call list_car_parts for valid ids.',
+            );
+          }
+          return success(
+            store.select({ level: 'node', id: node.id, label: node.label }, 'agent'),
+          );
+        }
+
+        if (raw.assembly && CAR_PART_IDS.includes(raw.assembly as CarPartId)) {
+          const id = raw.assembly as CarPartId;
+          return success(
+            store.select(
+              { level: 'assembly', id, label: CAR_PART_LABELS[id] },
+              'agent',
+            ),
+          );
+        }
+
+        return success(store.select(null, 'agent'));
+      } catch (err) {
+        return failure('select_car_part failed: ' + errorMessage(err));
+      }
+    },
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* 19. place_car_part                                                */
+  /* ---------------------------------------------------------------- */
+
+  const placeCarPart: McpToolDescriptor<ToolInput> = {
+    name: 'place_car_part',
+    description:
+      'Move, turn or resize ONE individual mesh - lift a wing mirror off, rotate a wheel rim, shrink a door handle. Offsets are relative to the part\u2019s rest position in model units (one unit is about 0.88 m), so the part keeps riding its assembly when a door swings or the car explodes. Absolute, not cumulative: sending the same offset twice leaves it in one place. Pass reset:true to put it back. Get part ids from list_car_parts.',
+    annotations: { title: 'Place one car part', idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['part'],
+      properties: {
+        part: { type: 'string', description: 'Part id from list_car_parts.' },
+        reset: {
+          type: 'boolean',
+          description: 'Return this part to its rest position and scale.',
+        },
+        x: {
+          type: 'number',
+          description:
+            'Offset across the car, ' + NODE_LIMITS.offset.min + ' to ' + NODE_LIMITS.offset.max + '.',
+        },
+        y: { type: 'number', description: 'Offset up/down, same range.' },
+        z: { type: 'number', description: 'Offset along the car, same range.' },
+        rotY: { type: 'number', description: 'Yaw in degrees. Values wrap.' },
+        scale: {
+          type: 'number',
+          description:
+            'Scale, ' + NODE_LIMITS.scale.min + ' to ' + NODE_LIMITS.scale.max + '. 1 is untouched.',
+        },
+      },
+    },
+    execute: (input) => {
+      try {
+        const raw = (input ?? {}) as Record<string, unknown>;
+        const part = raw.part as string | undefined;
+        if (!part) return failure('place_car_part needs a part id.');
+
+        const known = (getEngine()?.listCarNodes() ?? []).some((n) => n.id === part);
+        if (!known) {
+          return failure(
+            'No part with id "' + part + '". Call list_car_parts for valid ids.',
+          );
+        }
+
+        const store = useWired.getState();
+
+        if (raw.reset === true) {
+          return success(
+            store.setNodeTransform(part, { ...IDENTITY_NODE_TRANSFORM }, 'agent'),
+          );
+        }
+
+        const live = store.carRig.nodeTransforms[part] ?? IDENTITY_NODE_TRANSFORM;
+        const next: NodeTransform = {
+          x: (raw.x as number) ?? live.x,
+          y: (raw.y as number) ?? live.y,
+          z: (raw.z as number) ?? live.z,
+          rotX: live.rotX,
+          rotY: (raw.rotY as number) ?? live.rotY,
+          rotZ: live.rotZ,
+          scale: (raw.scale as number) ?? live.scale,
+        };
+
+        return success(store.setNodeTransform(part, next, 'agent'));
+      } catch (err) {
+        return failure('place_car_part failed: ' + errorMessage(err));
+      }
+    },
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* 20. detach_car_parts                                              */
+  /* ---------------------------------------------------------------- */
+
+  const detachCarParts: McpToolDescriptor<ToolInput> = {
+    name: 'detach_car_parts',
+    description:
+      'Remove or refit individual meshes by id - take off just the wing mirrors, or hide every window while leaving the frames. Distinct from set_car_parts, which works on whole assemblies. Nothing is destroyed; a detached part is one call from returning.',
+    annotations: { title: 'Detach individual parts', idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['remove', 'refit', 'reset'],
+          description:
+            'remove = hide the listed parts. refit = show them. reset = refit everything (ignores parts).',
+        },
+        parts: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Part ids from list_car_parts. Required for remove and refit.',
+        },
+      },
+    },
+    execute: (input) => {
+      try {
+        const raw = (input ?? {}) as { action?: string; parts?: unknown };
+        const store = useWired.getState();
+        const current = store.carRig.hiddenNodes;
+
+        if (raw.action === 'reset') {
+          return success(store.setNodeHidden([], 'agent'));
+        }
+
+        const requested = Array.isArray(raw.parts)
+          ? raw.parts.filter((x): x is string => typeof x === 'string')
+          : [];
+        if (!requested.length) {
+          return failure(
+            "detach_car_parts needs a non-empty parts array for action '" +
+              String(raw.action) +
+              "'.",
+          );
+        }
+
+        const known = new Set((getEngine()?.listCarNodes() ?? []).map((n) => n.id));
+        const unknown = requested.filter((id) => !known.has(id));
+        if (unknown.length) {
+          return failure(
+            'Unknown part id(s): ' +
+              unknown.slice(0, 5).join(', ') +
+              '. Call list_car_parts for valid ids.',
+          );
+        }
+
+        if (raw.action === 'remove') {
+          return success(
+            store.setNodeHidden([...current, ...requested], 'agent'),
+          );
+        }
+        if (raw.action === 'refit') {
+          const drop = new Set(requested);
+          return success(
+            store.setNodeHidden(current.filter((id) => !drop.has(id)), 'agent'),
+          );
+        }
+
+        return failure(
+          "detach_car_parts action must be 'remove', 'refit' or 'reset'.",
+        );
+      } catch (err) {
+        return failure('detach_car_parts failed: ' + errorMessage(err));
+      }
+    },
+  };
+
   return [
     getState,
     modifyEnvironment,
@@ -1749,6 +2045,10 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
     setCarParts,
     inspectCarPart,
     modifyCarPart,
+    listCarParts,
+    selectCarPart,
+    placeCarPart,
+    detachCarParts,
   ];
 }
 

@@ -16,7 +16,11 @@
 
 import * as THREE from 'three';
 
-import type { PartEdit, PartMaterialId } from '@/store/use-wired';
+import type {
+  NodeTransform,
+  PartEdit,
+  PartMaterialId,
+} from '@/store/use-wired';
 import {
   applyEditToMeshes,
   buildPartMaterial,
@@ -72,6 +76,46 @@ export const CAR_PART_LABELS: Record<CarPartId, string> = {
 };
 
 export type CarFinish = 'paint' | 'print';
+
+/**
+ * One individually addressable mesh from the glTF - a door handle, a wiper, a
+ * brake disc. There are 97 of them. Each sits on its own pivot nested inside
+ * its assembly's pivot, so a node can be moved, hidden or reshaped without
+ * disturbing the assembly, and the assembly can still swing on its hinge with
+ * the node riding along.
+ */
+export interface CarNodeInfo {
+  id: string;
+  label: string;
+  assembly: CarPartId;
+  triangles: number;
+}
+
+/**
+ * Names three.js invents for meshes the asset left unnamed - the tyres, and
+ * the extra primitives a multi-material mesh is split into. They carry no
+ * meaning, so they are replaced with a numbered label from the assembly.
+ */
+const AUTO_NAME = /^(mesh|object|node|primitive)[_\d]*$/i;
+
+/** Turn a glTF node name into something a person can read in a list. */
+function humanise(name: string, fallback: string): string {
+  const raw = (name || '').trim();
+  if (!raw || AUTO_NAME.test(raw)) return fallback;
+  return (
+    raw
+      .replace(/^Body|^Interior/, '')
+      .replace(/[_-]+/g, ' ')
+      // lower->Upper: "DoorHandle" -> "Door Handle"
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      // Upper->Upper+lower: "LColor" -> "L Color", so "BodyDoorLColor2"
+      // reads "Door L Color 2" instead of "Door LColor 2".
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+      .replace(/([A-Za-z])(\d)/g, '$1 $2')
+      .replace(/\s+/g, ' ')
+      .trim() || fallback
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Classification                                                      */
@@ -138,6 +182,17 @@ interface Hinge {
   maxAngle: number;
 }
 
+interface CarNode {
+  id: string;
+  label: string;
+  assembly: CarPartId;
+  pivot: THREE.Group;
+  mesh: THREE.Mesh;
+  /** Rest position of the node pivot, before any user transform. */
+  basePosition: THREE.Vector3;
+  triangles: number;
+}
+
 interface Assembly {
   id: CarPartId;
   meshes: THREE.Mesh[];
@@ -171,6 +226,17 @@ interface Assembly {
 
 export interface CarRig {
   root: THREE.Group;
+  /** Every individually addressable mesh, for the part tree and the agent. */
+  listNodes: () => CarNodeInfo[];
+  /** Which node a raycast hit belongs to, and its assembly. */
+  identify: (object: THREE.Object3D) => { node: string; assembly: CarPartId } | null;
+  /** The Object3D a transform gizmo should attach to for this selection. */
+  pivotFor: (level: 'assembly' | 'node', id: string) => THREE.Object3D | null;
+  /** Free transform on one node, relative to its rest pose. */
+  setNodeTransform: (id: string, next: NodeTransform) => void;
+  setNodeHidden: (ids: string[]) => void;
+  /** Read a node's live transform back, for the gizmo -> store direction. */
+  readNodeTransform: (id: string) => NodeTransform | null;
   /** Real geometry measurements for one assembly, or null if absent. */
   measurePart: (id: CarPartId) => PartMeasurement | null;
   /** Reshape and re-material one assembly. Absolute, not cumulative. */
@@ -226,6 +292,11 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   /* --- build one pivot per assembly ---------------------------------- */
 
   const assemblies = new Map<CarPartId, Assembly>();
+  const nodes = new Map<string, CarNode>();
+  const meshToNode = new Map<THREE.Mesh, string>();
+  /** Per-assembly counter, so unnamed meshes get "Body Shell part 3". */
+  const assemblySeq = new Map<CarPartId, number>();
+  let nodeSeq = 0;
 
   for (const [id, group] of buckets) {
     // Measure in world space while the meshes are still where they started.
@@ -273,6 +344,48 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     // attach() preserves each mesh's world transform while re-parenting it,
     // which is the whole reason this can be done after the fact.
     for (const mesh of group) pivot.attach(mesh);
+
+    // Then give every mesh its OWN pivot inside the assembly, so a single
+    // handle or wiper can be grabbed without moving the door it belongs to.
+    for (const mesh of group) {
+      const meshBox = new THREE.Box3().setFromObject(mesh);
+      if (meshBox.isEmpty()) continue;
+
+      const meshCentre = meshBox.getCenter(new THREE.Vector3());
+      pivot.updateMatrixWorld(true);
+      const localCentre = pivot.worldToLocal(meshCentre.clone());
+
+      const nodePivot = new THREE.Group();
+      const nodeId = id + ':' + (mesh.name || 'part' + nodeSeq);
+      nodePivot.name = 'node:' + nodeId;
+      nodePivot.position.copy(localCentre);
+      pivot.add(nodePivot);
+      nodePivot.attach(mesh);
+
+      assemblySeq.set(id, (assemblySeq.get(id) ?? 0) + 1);
+
+      const geometry = mesh.geometry;
+      const indexed = geometry.getIndex();
+      const triangles = Math.round(
+        (indexed ? indexed.count : geometry.getAttribute('position')?.count ?? 0) / 3,
+      );
+
+      const node: CarNode = {
+        id: nodeId,
+        label: humanise(
+          mesh.name,
+          CAR_PART_LABELS[id] + ' part ' + (assemblySeq.get(id) ?? 1),
+        ),
+        assembly: id,
+        pivot: nodePivot,
+        mesh,
+        basePosition: localCentre.clone(),
+        triangles,
+      };
+      nodes.set(nodeId, node);
+      meshToNode.set(mesh, nodeId);
+      nodeSeq += 1;
+    }
 
     // Explode outward from the car centre, biased upward so parts fan into a
     // readable diagram instead of collapsing into the ground plane.
@@ -379,6 +492,84 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   const presentParts = (): CarPartId[] =>
     CAR_PART_IDS.filter((id) => assemblies.has(id));
 
+  const listNodes = (): CarNodeInfo[] =>
+    Array.from(nodes.values())
+      .map((n) => ({
+        id: n.id,
+        label: n.label,
+        assembly: n.assembly,
+        triangles: n.triangles,
+      }))
+      .sort((a, b) =>
+        a.assembly === b.assembly
+          ? a.label.localeCompare(b.label)
+          : CAR_PART_IDS.indexOf(a.assembly) - CAR_PART_IDS.indexOf(b.assembly),
+      );
+
+  /** Walk up from a raycast hit to the mesh the rig knows about. */
+  const identify = (
+    object: THREE.Object3D,
+  ): { node: string; assembly: CarPartId } | null => {
+    let cursor: THREE.Object3D | null = object;
+    while (cursor) {
+      const asMesh = cursor as THREE.Mesh;
+      const nodeId = meshToNode.get(asMesh);
+      if (nodeId) {
+        const node = nodes.get(nodeId);
+        if (node) return { node: nodeId, assembly: node.assembly };
+      }
+      cursor = cursor.parent;
+    }
+    return null;
+  };
+
+  const pivotFor = (
+    level: 'assembly' | 'node',
+    id: string,
+  ): THREE.Object3D | null => {
+    if (level === 'assembly') return assemblies.get(id as CarPartId)?.pivot ?? null;
+    return nodes.get(id)?.pivot ?? null;
+  };
+
+  const setNodeTransform = (id: string, next: NodeTransform): void => {
+    const node = nodes.get(id);
+    if (!node) return;
+    node.pivot.position.set(
+      node.basePosition.x + next.x,
+      node.basePosition.y + next.y,
+      node.basePosition.z + next.z,
+    );
+    node.pivot.rotation.set(
+      THREE.MathUtils.degToRad(next.rotX),
+      THREE.MathUtils.degToRad(next.rotY),
+      THREE.MathUtils.degToRad(next.rotZ),
+    );
+    node.pivot.scale.setScalar(next.scale);
+  };
+
+  const readNodeTransform = (id: string): NodeTransform | null => {
+    const node = nodes.get(id);
+    if (!node) return null;
+    const p = node.pivot.position;
+    const r = node.pivot.rotation;
+    return {
+      x: p.x - node.basePosition.x,
+      y: p.y - node.basePosition.y,
+      z: p.z - node.basePosition.z,
+      rotX: THREE.MathUtils.radToDeg(r.x),
+      rotY: THREE.MathUtils.radToDeg(r.y),
+      rotZ: THREE.MathUtils.radToDeg(r.z),
+      scale: node.pivot.scale.x,
+    };
+  };
+
+  const setNodeHidden = (ids: string[]): void => {
+    const hidden = new Set(ids);
+    for (const node of nodes.values()) {
+      node.pivot.visible = !hidden.has(node.id);
+    }
+  };
+
   const measurePart = (id: CarPartId): PartMeasurement | null => {
     const assembly = assemblies.get(id);
     if (!assembly) return null;
@@ -425,6 +616,8 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   };
 
   const dispose = (): void => {
+    nodes.clear();
+    meshToNode.clear();
     for (const assembly of assemblies.values()) {
       assembly.editMaterial?.dispose();
       assembly.meshes.length = 0;
@@ -438,6 +631,12 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
 
   return {
     root,
+    listNodes,
+    identify,
+    pivotFor,
+    setNodeTransform,
+    setNodeHidden,
+    readNodeTransform,
     measurePart,
     setPartEdit,
     setFinish,

@@ -46,6 +46,19 @@ export default function SceneCanvas({ onReady }: SceneCanvasProps) {
           useWired.getState().setTransform(next, 'human', !settled);
         });
 
+        // Clicking a part in the viewport selects it; Ctrl-click drills into
+        // the individual mesh. Both land in the store, so the agent can read
+        // what the human currently has selected.
+        engine.onSelect((next) => {
+          if (disposed) return;
+          useWired.getState().select(next, 'human');
+        });
+
+        engine.onNodeTransformChange((id, next, settled) => {
+          if (disposed) return;
+          useWired.getState().setNodeTransform(id, next, 'human', !settled);
+        });
+
         onReady(engine);
 
         let lastPulseToken = store.pulseToken;

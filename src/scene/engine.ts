@@ -20,12 +20,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
-import { LIMITS } from '@/store/use-wired';
+import { CAR_PART_LABELS, LIMITS } from '@/store/use-wired';
 import type {
   CameraPreset,
   CarPartId,
   CarRigState,
   EditMode,
+  NodeTransform,
+  Selection,
   TransformState,
   WiredState,
 } from '@/store/use-wired';
@@ -156,6 +158,17 @@ class Engine implements WiredEngine {
   private transformHandler:
     | ((next: TransformState, settled: boolean) => void)
     | null = null;
+  private selectHandler: ((next: Selection | null) => void) | null = null;
+  private nodeTransformHandler:
+    | ((id: string, next: NodeTransform, settled: boolean) => void)
+    | null = null;
+
+  /** What the gizmo is bound to. null means the whole model pivot. */
+  private selection: Selection | null = null;
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointer = new THREE.Vector2();
+  /** Where the pointer went down, so a camera drag is not read as a click. */
+  private pointerDownAt: { x: number; y: number } | null = null;
   /** Set while apply() writes the pivot, so our own write cannot echo back. */
   private suppressTransformEvents = false;
   private editMode: EditMode = 'orbit';
@@ -279,6 +292,8 @@ class Engine implements WiredEngine {
       canvas.style.height = '100%';
       canvas.addEventListener('webglcontextlost', this.onContextLost);
       canvas.addEventListener('webglcontextrestored', this.onContextRestored);
+      canvas.addEventListener('pointerdown', this.onPointerDown);
+      canvas.addEventListener('pointerup', this.onPointerUp);
       this.canvasWithListeners = canvas;
     }
 
@@ -309,6 +324,85 @@ class Engine implements WiredEngine {
   /* ---------------------------------------------------------------- */
   /* Controls                                                          */
   /* ---------------------------------------------------------------- */
+
+  private onPointerDown = (event: PointerEvent): void => {
+    this.pointerDownAt = { x: event.clientX, y: event.clientY };
+  };
+
+  /**
+   * Treat this as a click only if the pointer barely moved. Orbiting the camera
+   * is also a pointerup on the canvas, and selecting a part every time someone
+   * spins the view would be maddening.
+   */
+  private onPointerUp = (event: PointerEvent): void => {
+    const down = this.pointerDownAt;
+    this.pointerDownAt = null;
+    if (!down || !this.renderer || !this.container) return;
+    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+
+    const car = this.realCar;
+    const target = car ? car.rig.root : this.spinPivot;
+    const hits = this.raycaster.intersectObject(target, true);
+
+    if (!hits.length) {
+      this.applySelection(null);
+      this.selectHandler?.(null);
+      return;
+    }
+
+    // Ctrl/Cmd drills into the individual mesh; a plain click takes the
+    // assembly it belongs to.
+    const fine = event.ctrlKey || event.metaKey;
+    const found = car ? car.rig.identify(hits[0].object) : null;
+
+    if (!found) {
+      this.applySelection(null);
+      this.selectHandler?.(null);
+      return;
+    }
+
+    const next: Selection = fine
+      ? {
+          level: 'node',
+          id: found.node,
+          label:
+            car?.rig.listNodes().find((n) => n.id === found.node)?.label ??
+            found.node,
+        }
+      : {
+          level: 'assembly',
+          id: found.assembly,
+          label: CAR_PART_LABELS[found.assembly],
+        };
+
+    this.applySelection(next);
+    this.selectHandler?.(next);
+  };
+
+  onSelect = (handler: (next: Selection | null) => void): void => {
+    this.selectHandler = handler;
+  };
+
+  onNodeTransformChange = (
+    handler: (id: string, next: NodeTransform, settled: boolean) => void,
+  ): void => {
+    this.nodeTransformHandler = handler;
+  };
+
+  listCarNodes = () => (this.realCar ? this.realCar.rig.listNodes() : []);
+
+  /** Point the gizmo at whatever is selected, or back at the whole model. */
+  private applySelection(next: Selection | null): void {
+    this.selection = next;
+    this.applyEditMode(this.editMode);
+  }
 
   private setupControls(): void {
     if (!this.renderer || this.orbitControls) return;
@@ -357,7 +451,19 @@ class Engine implements WiredEngine {
 
   /** Read the pivot back out and hand it to the store. */
   private emitTransform(settled: boolean): void {
-    if (this.suppressTransformEvents || !this.transformHandler) return;
+    if (this.suppressTransformEvents) return;
+
+    // A node selection routes to the node handler instead of the whole-object
+    // one, so dragging a wing mirror does not rewrite the car's placement.
+    const sel = this.selection;
+    if (sel && sel.level === 'node' && this.realCar) {
+      const next = this.realCar.rig.readNodeTransform(sel.id);
+      if (next) this.nodeTransformHandler?.(sel.id, next, settled);
+      return;
+    }
+    if (sel && sel.level === 'assembly') return;
+
+    if (!this.transformHandler) return;
     const p = this.modelPivot.position;
     const r = this.modelPivot.rotation;
     this.transformHandler(
@@ -391,7 +497,14 @@ class Engine implements WiredEngine {
       return;
     }
 
-    transform.attach(this.modelPivot);
+    // Bind to the selected assembly or node when there is one, otherwise to
+    // the whole model. Selecting a door handle and dragging moves only that.
+    const target =
+      this.selection && this.realCar
+        ? this.realCar.rig.pivotFor(this.selection.level, this.selection.id)
+        : null;
+
+    transform.attach(target ?? this.modelPivot);
     transform.setMode(mode);
     if (this.transformHelper) this.transformHelper.visible = true;
   }
@@ -502,6 +615,46 @@ class Engine implements WiredEngine {
       );
     }
 
+    // Individually hidden meshes.
+    const prevNodesHidden = prev ? prev.hiddenNodes : [];
+    const nodesHiddenChanged =
+      !prev ||
+      prevNodesHidden.length !== next.hiddenNodes.length ||
+      next.hiddenNodes.some((id, i) => prevNodesHidden[i] !== id);
+    if (nodesHiddenChanged) car.rig.setNodeHidden(next.hiddenNodes);
+
+    // Per-node free transforms. Compared by reference: the store replaces the
+    // map on any change, so an untouched node keeps its object identity.
+    const prevNodeT = prev ? prev.nodeTransforms : {};
+    const nextNodeT = next.nodeTransforms;
+    const touchedNodes = new Set<string>([
+      ...Object.keys(prevNodeT),
+      ...Object.keys(nextNodeT),
+    ]);
+    for (const id of touchedNodes) {
+      const before = prevNodeT[id];
+      const after = nextNodeT[id];
+      if (before === after) continue;
+      car.rig.setNodeTransform(
+        id,
+        after ?? { x: 0, y: 0, z: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1 },
+      );
+    }
+
+    // Selection drives what the gizmo is attached to.
+    const prevSel = prev ? prev.selection : undefined;
+    const sameSelection =
+      prevSel !== undefined &&
+      ((prevSel === null && next.selection === null) ||
+        (prevSel !== null &&
+          next.selection !== null &&
+          prevSel.level === next.selection.level &&
+          prevSel.id === next.selection.id));
+    if (!sameSelection) {
+      this.selection = next.selection;
+      this.applyEditMode(this.editMode);
+    }
+
     const changedHidden =
       !prev ||
       prev.hidden.length !== next.hidden.length ||
@@ -511,6 +664,9 @@ class Engine implements WiredEngine {
     this.appliedRig = {
       ...next,
       hidden: [...next.hidden],
+      hiddenNodes: [...next.hiddenNodes],
+      nodeTransforms: { ...next.nodeTransforms },
+      selection: next.selection ? { ...next.selection } : null,
       edits: { ...next.edits },
     };
   }
@@ -905,6 +1061,8 @@ class Engine implements WiredEngine {
       window.removeEventListener('resize', this.resize);
     }
     if (this.canvasWithListeners) {
+      this.canvasWithListeners.removeEventListener('pointerdown', this.onPointerDown);
+      this.canvasWithListeners.removeEventListener('pointerup', this.onPointerUp);
       this.canvasWithListeners.removeEventListener('webglcontextlost', this.onContextLost);
       this.canvasWithListeners.removeEventListener(
         'webglcontextrestored',

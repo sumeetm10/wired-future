@@ -37,7 +37,7 @@ React never imports Three.js. The engine never imports React. The zustand store 
 ## Status
 
 **Verified live.** On Chrome 152 stable with the WebMCP origin trial token served for
-`https://sumeetm10.github.io`, the browser accepts the registration and all sixteen tools
+`https://sumeetm10.github.io`, the browser accepts the registration and all twenty tools
 are exposed to the agent. No flags, no Canary, no special browser — an ordinary Chrome
 visitor gets the agent bridge.
 
@@ -93,6 +93,10 @@ Registered via `navigator.modelContext.registerTool()` (W3C WebMCP draft, April 
 | `set_car_parts` | Detach or refit assemblies: take the wheels off, drop the body shell to expose the interior. |
 | `inspect_car_part` | Measures a part from its actual triangles: area, volume, bbox, watertightness, mass in each material. |
 | `modify_car_part` | Rewrites the part's vertices: per-axis scale, normal-offset thickening, twist, and material re-spec. |
+| `list_car_parts` | Enumerates all 109 individually addressable meshes, filterable by assembly or name. |
+| `select_car_part` | Points the on-screen gizmo at a part, handing it to the person to drag. |
+| `place_car_part` | Moves, turns or resizes one individual mesh — a wing mirror, a brake disc. |
+| `detach_car_parts` | Removes or refits individual meshes by id, distinct from whole assemblies. |
 
 Every `execute()` returns MCP content blocks plus `structuredContent` carrying the resulting
 state, so the agent stays grounded across turns.
@@ -112,6 +116,20 @@ and four wheels — each on its own pivot.
 - **Doors and hood** swing on hinges derived from their own bounding boxes — the door
   pivots on its front vertical edge, the hood on its rear edge.
 - **Parts detach and refit** individually.
+
+### Selecting a part with the mouse
+
+Click a part on the canvas to select its **assembly** — the whole door. Hold **Ctrl**
+(or Cmd) to drill into the **individual mesh** — that door's handle, its mirror, its window
+gasket. The transform gizmo re-targets to whatever is selected, so dragging moves exactly
+that part and nothing else.
+
+The glTF's 97 named nodes become **109 addressable meshes** once multi-material primitives
+are split. Each sits on its own pivot nested inside its assembly's pivot, so a moved handle
+still rides the door when the door swings open or the car explodes.
+
+Nodes the asset left unnamed (the tyres, split primitives) are labelled from their assembly
+rather than shown as three.js's `mesh_85`.
 
 ### Editing a part with real geometry
 
@@ -279,7 +297,7 @@ src/
     depth.ts               Depth Anything V2 Small via transformers.js
     screen.ts              CLIP zero-shot gate: objects yes, living things no
   webmcp/
-    tools.ts               the sixteen tool descriptors
+    tools.ts               the twenty tool descriptors
     use-webmcp.ts          feature detection, registration, StrictMode-safe cleanup
     simulate.ts            local agent fallback, routed through the real execute()
   components/panel/        control panel, status bar, agent simulator, runtime badge
