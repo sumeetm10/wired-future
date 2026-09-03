@@ -26,12 +26,6 @@ export const metadata: Metadata = {
   description:
     'A collaborative 3D creative canvas where a human and an AI agent work on the exact same screen. Built on WebMCP (navigator.modelContext) for the OpenAI WebMCP Challenge.',
   applicationName: 'Wired Future',
-  // WebMCP is an origin trial through Chrome 156. Registering the deployed
-  // origin at chromestatus and setting NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN makes
-  // the API available to ordinary visitors with no flags and no Canary build.
-  ...(process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN
-    ? { other: { 'origin-trial': process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN } }
-    : {}),
   authors: [{ name: 'Wired Future' }],
   keywords: ['WebMCP', 'modelContext', 'agent-native', 'three.js', 'creative canvas'],
   openGraph: {
@@ -60,6 +54,22 @@ export default function RootLayout({
       className={chakraPetch.variable + ' ' + jetbrainsMono.variable}
     >
       <body>
+        {/*
+          Origin trial token for WebMCP.
+
+          It MUST be http-equiv, not name - Chrome only reads
+          <meta http-equiv="origin-trial">. Next's metadata.other API emits
+          name="...", which the browser silently ignores, so the tag is
+          rendered here instead. React 19 hoists meta elements into <head>
+          from anywhere in the tree, so this lands in the right place.
+        */}
+        {process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN ? (
+          <meta
+            httpEquiv="origin-trial"
+            content={process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN}
+          />
+        ) : null}
+
         <noscript>
           <div
             style={{
