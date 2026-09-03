@@ -17,6 +17,7 @@
 
 import { useEffect, useRef } from 'react';
 
+import type { ModelContext } from '@/types/webmcp';
 import type { WiredEngine } from '@/scene/contract';
 import { useWired } from '@/store/use-wired';
 import { buildTools } from './tools';
@@ -31,6 +32,19 @@ const UNAVAILABLE_MESSAGE =
   "(Chrome's #enable-webmcp-testing flag is listed in 152 stable but exposes nothing, " +
   'so the flag is not a working alternative today.)';
 
+/** Whichever surface this runtime exposes, or null when there is none. */
+function resolveModelContext(): ModelContext | null {
+  if (typeof document !== 'undefined') {
+    const fromDocument = document.modelContext;
+    if (typeof fromDocument?.registerTool === 'function') return fromDocument;
+  }
+  if (typeof navigator !== 'undefined') {
+    const fromNavigator = navigator.modelContext;
+    if (typeof fromNavigator?.registerTool === 'function') return fromNavigator;
+  }
+  return null;
+}
+
 export function useWebMcp(getEngine: () => WiredEngine | null): void {
   // Keep the latest getter in a ref so an inline arrow from the caller does not
   // re-register the whole tool set on every render.
@@ -43,18 +57,12 @@ export function useWebMcp(getEngine: () => WiredEngine | null): void {
   useEffect(() => {
     const store = useWired.getState();
 
-    const supported =
-      typeof navigator !== 'undefined' &&
-      'modelContext' in navigator &&
-      typeof navigator.modelContext?.registerTool === 'function';
+    // The API is mid-migration: it moved from navigator.modelContext to
+    // document.modelContext in the 21 July 2026 revision, so a runtime may
+    // expose either. Probe document first (the newer home), then navigator,
+    // and use whichever actually carries registerTool.
+    const context = resolveModelContext();
 
-    if (!supported) {
-      store.setMcpStatus('unavailable');
-      store.log('system', UNAVAILABLE_MESSAGE);
-      return;
-    }
-
-    const context = navigator.modelContext;
     if (!context) {
       store.setMcpStatus('unavailable');
       store.log('system', UNAVAILABLE_MESSAGE);

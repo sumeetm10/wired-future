@@ -26,6 +26,12 @@ export const metadata: Metadata = {
   description:
     'A collaborative 3D creative canvas where a human and an AI agent work on the exact same screen. Built on WebMCP (navigator.modelContext) for the OpenAI WebMCP Challenge.',
   applicationName: 'Wired Future',
+  // WebMCP is an origin trial through Chrome 156. Registering the deployed
+  // origin at chromestatus and setting NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN makes
+  // the API available to ordinary visitors with no flags and no Canary build.
+  ...(process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN
+    ? { other: { 'origin-trial': process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN } }
+    : {}),
   authors: [{ name: 'Wired Future' }],
   keywords: ['WebMCP', 'modelContext', 'agent-native', 'three.js', 'creative canvas'],
   openGraph: {

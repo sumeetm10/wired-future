@@ -33,6 +33,9 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_BASE_PATH: /wired-future
+          # Optional. Add a repo secret named ORIGIN_TRIAL_TOKEN to enable
+          # WebMCP for ordinary Chrome visitors; the build works without it.
+          NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN: ${{ secrets.ORIGIN_TRIAL_TOKEN }}
 
       - name: Ensure .nojekyll
         run: touch out/.nojekyll

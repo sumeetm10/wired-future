@@ -193,10 +193,21 @@ in descending order of realism:
 
 1. **ChatGPT's in-app browser** — native WebMCP support. Open the deployed URL there and ask it
    to change the scene.
-2. **Chrome with `#enable-webmcp-testing`** — in principle. Verified NOT working on
-   152.0.7977.75 stable: with both `WebMCP` and `DevToolsWebMCPSupport` confirmed in the
-   launch command line, `navigator` exposes nothing WebMCP-shaped. The flag is listed but
-   inert in that build, so treat it as unavailable rather than as a fallback.
+2. **An origin trial token** — the supported route for production traffic. WebMCP runs as a
+   Chrome origin trial through Chrome 156. Register the deployed origin at the Chrome origin
+   trials console, then set `NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN` (locally) or add an
+   `ORIGIN_TRIAL_TOKEN` repo secret (CI). The token is emitted as
+   `<meta http-equiv="origin-trial">` and the API becomes available to ordinary visitors with
+   no flags at all.
+
+3. **Chrome's `#enable-webmcp-testing` flag** — measured as NOT working. On Chrome
+   152.0.7977.75 and Edge 152.0.4191.53, with both `WebMCP` and `DevToolsWebMCPSupport`
+   confirmed present in the launch command line, neither `navigator` nor `document` exposed
+   anything WebMCP-shaped. Treat the flag as unavailable; use the origin trial instead.
+
+Note the API surface moved from `navigator.modelContext` to `document.modelContext` in the
+21 July 2026 revision. `src/webmcp/use-webmcp.ts` probes both and uses whichever carries
+`registerTool`, so it works either side of that migration.
 3. **The built-in simulator** — the "Agent Simulator" panel (top right on desktop; on a phone
    it is the sheet below the badge, collapsible with the "Tool Call" chip). Works in any
    browser. It invokes the same `execute()` handlers, so the behaviour is identical.

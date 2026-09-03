@@ -45,7 +45,13 @@ export interface ModelContext {
 }
 
 declare global {
+  // The API moved from navigator.modelContext to document.modelContext in the
+  // 21 July 2026 revision. Both are declared because the migration is still in
+  // flight and a given runtime may expose either one.
   interface Navigator {
+    modelContext?: ModelContext;
+  }
+  interface Document {
     modelContext?: ModelContext;
   }
 }

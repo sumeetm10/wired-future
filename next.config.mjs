@@ -30,7 +30,11 @@ const nextConfig = {
   // Client code needs the same prefix to build /models/*.glb URLs. Without
   // this the var is undefined in the browser whenever the fallback above
   // supplied the basePath, and the car 404s on GitHub Pages.
-  env: { NEXT_PUBLIC_BASE_PATH: basePath },
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+    NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN:
+      process.env.NEXT_PUBLIC_ORIGIN_TRIAL_TOKEN || '',
+  },
 
   output: 'export',
   basePath,
