@@ -66,6 +66,20 @@ at 1.2 rather than 1.44.
 An agent can measure the hood, tell you it is 18 kg in 1 mm aluminium, and re-spec it in
 carbon fibre at 11 kg, with the geometry on screen changing to match.
 
+**Hands on the glass**
+
+Turn the camera on and the car answers to your hands. MediaPipe's hand
+landmarker runs in the tab, and two gestures survive a noisy webcam: pinch one
+hand and the car follows it across the stage, pinch both and pull them apart to
+explode it into its assemblies.
+
+Pinch is measured as a ratio of hand size rather than a raw distance, so it
+reads the same at arm's length as up close, and the engage and release
+thresholds differ so a hand hovering at the boundary does not chatter. Gestures
+land in the same reducer as everything else, tagged [HAND] in the trace, so the
+sliders move as you pinch. The video is never uploaded, and stopping the camera
+releases the device.
+
 **Photo to 3D, with no server**
 
 Drop a photo of an object and it becomes a closed 3D shape on the stage: the depth

@@ -9,18 +9,21 @@ const TAGS: Record<ActionOrigin, string> = {
   human: '[HUMAN]',
   agent: '[AGENT]',
   system: '[SYS]',
+  hand: '[HAND]',
 };
 
 const TAG_CLASS: Record<ActionOrigin, string> = {
   human: 'wf-tag wf-tag--human',
   agent: 'wf-tag wf-tag--agent',
   system: 'wf-tag wf-tag--system',
+  hand: 'wf-tag wf-tag--hand',
 };
 
 const ROW_CLASS: Record<ActionOrigin, string> = {
   human: 'wf-log__row wf-log__row--human',
   agent: 'wf-log__row wf-log__row--agent',
   system: 'wf-log__row',
+  hand: 'wf-log__row wf-log__row--hand',
 };
 
 function pad2(n: number): string {

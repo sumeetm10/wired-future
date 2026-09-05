@@ -58,6 +58,30 @@ For the record, the flag route was measured and does NOT work: on Chrome 152.0.7
 Edge 152.0.4191.53, with `WebMCP` and `DevToolsWebMCPSupport` both confirmed present in the
 launch command line, neither surface was exposed. Use the origin trial.
 
+## Hand control
+
+Enable the camera in the Hand Control panel and the car answers to your hands.
+
+| Gesture | What it does |
+|---|---|
+| Pinch one hand, move it | Drags the car across the stage |
+| Pinch both hands, pull apart | Explodes the car into its assemblies |
+| Open your hands | Lets go, and the trace logs one `[HAND]` line |
+
+MediaPipe's hand landmarker runs in the tab; the WASM runtime and the model
+stream from a CDN on first use and are cached by the browser. Nothing is
+uploaded and nothing is recorded, and stopping the camera releases the device.
+
+Two details make it usable rather than a demo. Pinch is a RATIO of hand size,
+not a raw distance, so it reads the same near the camera and at arm's length.
+And the engage threshold (0.7) sits above the release threshold (0.4), so a hand
+resting near the boundary does not flicker between grabbed and released.
+
+Gestures are relative to where the pinch started, so grabbing the car does not
+teleport it to wherever your hand happened to be. Like the gizmo before it, a
+gesture writes silently while it runs and logs once when it ends, which keeps a
+60-frame drag from flushing the whole trace.
+
 ## Where the model lives
 
 Nowhere in this repo, and that is the point.

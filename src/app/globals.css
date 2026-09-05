@@ -955,6 +955,11 @@ textarea.wf-input {
   background: linear-gradient(90deg, rgba(255, 43, 214, 0.1), transparent 55%);
 }
 
+.wf-log__row--hand {
+  border-left-color: var(--wf-magenta);
+  background: linear-gradient(90deg, rgba(255, 43, 214, 0.1), transparent 55%);
+}
+
 .wf-log__row--human {
   border-left-color: rgba(0, 240, 255, 0.35);
 }
@@ -1647,4 +1652,89 @@ textarea.wf-input {
   .wf-tour-tip {
     transition: none;
   }
+}
+
+/* ==================================================================== */
+/* Hand control                                                         */
+/* ==================================================================== */
+
+.wf-cam {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  border: 1px solid var(--wf-border-soft);
+  background: rgba(4, 2, 14, 0.6);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.wf-cam.is-live {
+  border-color: var(--wf-border);
+  box-shadow: inset 0 0 24px rgba(0, 240, 255, 0.12);
+}
+
+/* Mirrored, so raising your right hand raises the hand on the right of the
+   preview. The gesture reader mirrors its x to match. */
+.wf-cam__video,
+.wf-cam__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: scaleX(-1);
+}
+
+.wf-cam__video {
+  object-fit: cover;
+  /* Hidden rather than unmounted: the tracker needs a laid-out element. */
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.wf-cam.is-live .wf-cam__video {
+  opacity: 0.85;
+}
+
+.wf-cam__overlay {
+  pointer-events: none;
+}
+
+.wf-cam__hint {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+}
+
+.wf-meter {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--wf-track);
+  overflow: hidden;
+}
+
+.wf-meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--wf-cyan);
+  transition: width 0.08s linear;
+}
+
+.wf-meter__fill.is-hot {
+  background: var(--wf-green);
+  box-shadow: 0 0 12px rgba(55, 245, 160, 0.7);
+}
+
+.wf-note--warn {
+  color: var(--wf-amber);
+}
+
+.wf-tag--hand {
+  color: var(--wf-green);
+  text-shadow: 0 0 10px rgba(55, 245, 160, 0.5);
 }

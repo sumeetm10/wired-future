@@ -52,6 +52,18 @@ const nextConfig = {
       'onnxruntime-node$': false,
       sharp$: false,
     };
+
+    // MediaPipe's vision bundle resolves its WASM loader through a computed
+    // require, which webpack cannot follow and reports as a critical
+    // dependency. It is not one: the loader is fetched at runtime from the CDN
+    // root passed to FilesetResolver.forVisionTasks, never bundled.
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings ?? []),
+      {
+        module: /@mediapipe[\/]tasks-vision/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      },
+    ];
     return config;
   },
 };

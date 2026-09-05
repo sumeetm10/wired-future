@@ -6,6 +6,7 @@ import SceneCanvas from '@/components/scene-canvas';
 import ControlPanel from '@/components/panel/control-panel';
 import McpBadge from '@/components/panel/mcp-badge';
 import AgentSimulator from '@/components/panel/agent-simulator';
+import HandsPanel from '@/components/panel/hands-panel';
 import PhotoPanel from '@/components/panel/photo-panel';
 import SelectionPanel from '@/components/panel/selection-panel';
 import StatusBar from '@/components/panel/status-bar';
@@ -62,6 +63,7 @@ export default function WiredFutureApp() {
       <div className="wf-rail wf-rail--right">
         <AgentSimulator getEngine={getEngine} />
         <SelectionPanel getEngine={getEngine} />
+        <HandsPanel />
         <PhotoPanel getEngine={getEngine} />
       </div>
       <StatusBar />

@@ -42,6 +42,12 @@ const STEPS: TourStep[] = [
       '109 parts, each addressable by name. Search, select, measure real geometry, or re-spec a hood in carbon fibre.',
   },
   {
+    sel: '#tour-hands',
+    title: 'Hand control',
+    body:
+      'Turn the camera on and pinch. One hand drags the car; pinch both hands and pull them apart to explode it. The video never leaves this tab.',
+  },
+  {
     sel: '#tour-photo',
     title: 'Photo to 3D',
     body:
@@ -59,5 +65,5 @@ export default function WiredTour() {
   // Panels are SSR’d, but the badge settles its runtime probe and the rig
   // finishes loading in the first second. A short delay lets the first paint
   // stop moving before the ring lands.
-  return <SpotlightTour storageKey="wf_tour_v1" steps={STEPS} startDelay={900} />;
+  return <SpotlightTour storageKey="wf_tour_v2" steps={STEPS} startDelay={900} />;
 }

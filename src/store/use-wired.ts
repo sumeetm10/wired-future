@@ -102,7 +102,12 @@ export type CarPartId =
   | 'wheelRR';
 export type CameraPreset = 'orbit' | 'top' | 'close' | 'wide';
 export type ScenePresetName = 'neon-noir' | 'solar-flare' | 'deep-void' | 'hologram';
-export type ActionOrigin = 'human' | 'agent' | 'system';
+/**
+ * Who caused a change. 'hand' is still the human, but webcam gestures are
+ * worth separating in the trace: without it a hand drag is indistinguishable
+ * from a mouse drag, which is exactly the thing worth seeing.
+ */
+export type ActionOrigin = 'human' | 'agent' | 'system' | 'hand';
 
 export const MODEL_TYPES: ModelType[] = ['car', 'engine', 'photo'];
 export const CAR_VARIANTS: CarVariant[] = ['real', 'parametric'];
@@ -645,7 +650,17 @@ export interface WiredStore extends WiredState {
    */
   photo: PhotoState;
 
-  apply: (patch: Partial<WiredState>, origin: ActionOrigin) => string;
+  apply: (
+    patch: Partial<WiredState>,
+    origin: ActionOrigin,
+    /**
+     * Skip the trace line. Continuous input — a webcam gesture, like the
+     * drag gizmo before it — would otherwise write one entry per frame and
+     * flush the whole ring buffer in two seconds. Call once more without it
+     * when the gesture ends.
+     */
+    silent?: boolean,
+  ) => string;
 
   /**
    * Transform writer for the drag gizmo. The gizmo fires on every pointer
@@ -789,13 +804,13 @@ export const useWired = create<WiredStore>((set, get) => ({
   pulseIntensity: 2,
   pulseDurationMs: 1600,
 
-  apply: (rawPatch, origin) => {
+  apply: (rawPatch, origin, silent = false) => {
     const patch = sanitizePatch(rawPatch);
     const parts = describe(patch);
 
     if (!parts.length) {
       const message = 'no recognisable parameters - nothing changed';
-      get().log(origin, message);
+      if (!silent) get().log(origin, message);
       return message;
     }
 
@@ -808,11 +823,14 @@ export const useWired = create<WiredStore>((set, get) => ({
         ? { ...s.transform, ...patch.transform }
         : s.transform,
       carRig: patch.carRig ? { ...s.carRig, ...patch.carRig } : s.carRig,
-      agentActionCount: origin === 'agent' ? s.agentActionCount + 1 : s.agentActionCount,
+      agentActionCount:
+        origin === 'agent' && !silent
+          ? s.agentActionCount + 1
+          : s.agentActionCount,
     }));
 
     const message = parts.join(', ');
-    get().log(origin, message);
+    if (!silent) get().log(origin, message);
     return message;
   },
 
