@@ -60,27 +60,51 @@ launch command line, neither surface was exposed. Use the origin trial.
 
 ## Hand control
 
-Enable the camera in the Hand Control panel and the car answers to your hands.
+Enable the camera in the Hand Control panel and each hand becomes a pointer. A ring
+follows the point between your thumb and index finger, and the part under it glows.
+Pinching those two fingers together is the click.
 
 | Gesture | What it does |
 |---|---|
-| Pinch one hand, move it | Drags the car across the stage |
-| Pinch both hands, pull apart | Explodes the car into its assemblies |
-| Open your hands | Lets go, and the trace logs one `[HAND]` line |
+| Point at a part | It glows green and the cursor names it |
+| Pinch a door or the hood, move | Hold it: it swings on its hinge with your hand |
+| Pinch any other part, move | Hold it: a window, a wheel, a mirror, carried with your hand |
+| Quick pinch on a part | What a Ctrl-click does: open or shut, pop off, or put a removed part back |
+| Pinch empty space, move | Carry the whole car |
+| Both hands in empty space | Pull apart to explode the car, together to rebuild it |
+| Open your fingers | Let go; the trace logs one `[HAND]` line |
 
-MediaPipe's hand landmarker runs in the tab; the WASM runtime and the model
-stream from a CDN on first use and are cached by the browser. Nothing is
-uploaded and nothing is recorded, and stopping the camera releases the device.
+MediaPipe's hand landmarker runs in the tab; the WASM runtime and the model stream from a
+CDN on first use and are cached by the browser. Nothing is uploaded and nothing is
+recorded, and stopping the camera releases the device.
 
-Two details make it usable rather than a demo. Pinch is a RATIO of hand size,
-not a raw distance, so it reads the same near the camera and at arm's length.
-And the engage threshold (0.7) sits above the release threshold (0.4), so a hand
-resting near the boundary does not flicker between grabbed and released.
+A held door follows the hand around its hinge: every frame the controller finds the hinge
+value that puts the point you grabbed nearest your hand on screen, so moving across the
+door's swing does nothing, exactly as with a real door. Seen nearly end-on (from the
+default camera the left door opens almost straight at you) the swing covers a dozen
+pixels and no hand could follow it, so below 180 px of on-screen travel the door follows a
+virtual lever instead: pull along the direction it opens and 180 px is the full swing.
+Other parts are carried in the plane through the grabbed point that faces the camera, so
+up is up, left is left, and the part keeps its distance.
 
-Gestures are relative to where the pinch started, so grabbing the car does not
-teleport it to wherever your hand happened to be. Like the gizmo before it, a
-gesture writes silently while it runs and logs once when it ends, which keeps a
-60-frame drag from flushing the whole trace.
+Webcam hands are noisy, and four things carry the feel:
+
+- **A One Euro filter** on each cursor (Casiez et al., CHI 2012): heavy smoothing while
+  the hand is still, almost none in a fast sweep, so aiming is steady and swinging a door
+  does not trail behind.
+- **An aim lock.** Closing the fingers drags the pinch point a few pixels. The target is
+  chosen as the fingers START to close, not when they meet, and travel is measured from
+  there, so the pinch itself never moves what it grabs.
+- **A grace period.** Tracking drops single frames; a hand missing for under 320 ms keeps
+  what it holds.
+- **Pinch measured in 3D.** The thumb-to-index distance comes from MediaPipe's world
+  landmarks, in metres, as a ratio of hand size. A 2D measure reads an open hand turned
+  edge-on as pinched, because the two fingertips overlap on screen.
+
+The two hands are told apart by distance to where each was last seen, not by the order
+MediaPipe lists them in, which can swap between frames. A held door or a carried window
+writes through the same store calls as the mouse and the agent, so the Control Deck's door
+slider swings while your hand swings the door.
 
 ## Where the model lives
 
@@ -141,19 +165,40 @@ and four wheels — each on its own pivot.
   pivots on its front vertical edge, the hood on its rear edge.
 - **Parts detach and refit** individually.
 
-### Handling a part with the mouse
+### Handling the car with the mouse
 
-A plain click selects an assembly. Holding **Ctrl** (or Cmd) over any part turns the pointer
-into a direct manipulator — no mode to switch, no gizmo to aim:
-
-| Gesture | Effect |
+| Input | Effect |
 |---|---|
-| Ctrl + **click** | Runs what the part does. Doors swing on their hinge, the hood lifts, anything without a hinge pops off and back on. |
+| **Drag** | Orbits the camera. Right-drag pans. Grabbing the canvas during auto-orbit takes the camera over, from exactly where it was. |
+| **Scroll** | Zooms towards whatever is under the pointer. A trackpad pinch does the same. |
+| **Click** | Selects the assembly under the pointer; empty space clears the selection. |
+| **Double-click** | Flies the camera to that part; double-clicking empty space flies it back. |
+| Ctrl + **click** | Runs what the part does. Doors swing on their hinge, the hood lifts, anything without a hinge pops off. Ctrl-click where a removed part was puts it back. |
 | Ctrl + **drag** | Pulls that part out along its own outward axis, live, following the drag. |
-| Ctrl + **scroll** | Resizes it. Page zoom is suppressed so the browser does not fight you. |
+| Ctrl + **scroll** | Resizes it. Neither the page nor the camera zooms while you do. |
+
+Hovering shows what a click will act on: the assembly glows, and once the pointer rests its
+name appears beside it. Holding Ctrl (or Cmd) narrows the glow to the single part a gesture
+will act on and lists what click, drag and scroll will do to it. The selected part keeps a
+slow cyan glow; snapshots taken for the agent leave both glows out.
+
+Exactly one thing owns the pointer at a time: the gizmo, a Ctrl gesture on a part, or the
+camera, each claimed at pointerdown before OrbitControls sees the event, with
+`OrbitControls.enabled` derived from those claims in one function. It used to be written from
+five places and the frame loop's write won, so the camera orbited while you dragged the
+gizmo. A trackpad pinch arrives as a Ctrl+wheel with no Control key pressed, so part resizing
+answers only to a physically held Ctrl or Cmd. Removed parts are skipped by picking, since
+three.js raycasts ignore `visible`, and a drag whose release never arrived (another window, a
+lost capture) ends itself instead of leaving the part glued to the mouse.
 
 A drag is told from a click by pointer travel, so orbiting the camera never actuates
-anything by accident, and the camera is frozen for the duration of a part drag.
+anything by accident.
+
+The gizmo works at three levels. With nothing selected it moves the whole car; with an
+assembly selected it moves that assembly, layered on top of explode and the hinge, so a door
+you have lifted out still explodes along its own line and still opens on its own hinge; with a
+single part selected (from the Parts list) it moves just that part. All three are stored, so an
+agent reading the scene sees where you put things.
 
 Gestures mutate the scene directly at frame rate and commit to the store **once**, on
 release. Routing every pointermove through the store re-rendered the 109-row part list and
@@ -328,8 +373,19 @@ src/
     part-ops.ts            real geometry: area, volume, centroid, vertex deformation
     photo-relief.ts        depth grid -> displaced, photo-textured relief mesh
     nodes.ts               seeded floating neon node cluster
+    picking.ts             bounds-tree raycasting (three-mesh-bvh), built in idle slices
+    highlight.ts           hover and selection glow: additive overlays sharing each part's geometry
+    overlay-dom.ts         pointer tag and loading pill, plain DOM owned by the engine
+    hinge-solve.ts         which hinge value puts a grabbed point under the hand
   store/
     use-wired.ts           THE reducer. Frozen contract everything else builds against.
+  hands/
+    tracker.ts             camera + MediaPipe hand landmarker, lazy-loaded
+    gestures.ts            21 landmarks -> pinch point and 3D pinch strength
+    controller.ts          hands as pointers: hover, hold, tap, carry, explode
+    hand-slots.ts          which detection is which hand; camera -> screen mapping
+    one-euro.ts            the One Euro jitter filter
+    cursor-layer.ts        on-screen hand cursors, plain DOM
   photo/
     pipeline.ts            decode -> screen -> depth -> mesh, all in-browser
     depth.ts               Depth Anything V2 Small via transformers.js
@@ -350,6 +406,15 @@ src/
   them with a seeded PRNG so raising the count adds nodes without shuffling the existing ones.
 - `engine.apply()` is called on every store change and diffs against a cached previous state, so
   dragging the colour picker does not rebuild the model.
+- Picking goes through three-mesh-bvh bounds trees, built in idle time after the car loads and
+  refit after every reshaping edit. A pick costs microseconds instead of walking the body
+  shell's 42k triangles, which is what makes following the pointer every frame affordable.
+  The trees are built in `indirect` mode, so the index buffers the measuring code reads are
+  never reordered.
+- Motion is targets plus a frame loop: `apply()` records where things should be and the loop
+  springs doors, hood and explode, eases placement, glides the camera around a sphere and
+  cross-fades the palette. `prefers-reduced-motion` turns every glide into a cut, and
+  `capture()` lands them all before it renders, so an agent never judges a half-open door.
 
 ## Licence
 

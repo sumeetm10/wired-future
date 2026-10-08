@@ -1,213 +1,136 @@
 /**
- * Wired Future — the ground plane.
+ * Wired Future — the hologram stage.
  *
- * A single wireframe PlaneGeometry that is mutated IN PLACE every frame.
- * The geometry is never rebuilt: we cache each vertex's original (x, y) and
- * radius at construction time and rewrite only the height component of the
- * position buffer, then flip `needsUpdate`.
+ * Replaces the rippling wireframe landscape. That landscape rewrote 12,321
+ * vertices every frame on the CPU and re-uploaded them; this stage is one
+ * flat quad whose rings, ticks and grid are drawn by a fragment shader, so a
+ * frame costs two uniform writes and one draw call.
  *
- * The mesh (not the geometry) is rotated -PI/2 on X, so in buffer-local space
- * the plane still lies on X/Y and the HEIGHT axis is the local Z component —
- * byte offset i * 3 + 2.
- *
- * No React, no store imports. Pure three.js.
+ * The old wave controls keep working with new jobs, so agents and saved
+ * presets still mean something:
+ *   waveVelocity  -> how fast the rings turn (0 holds them still)
+ *   waveAmplitude -> how brightly the stage glows (0 nearly dark)
  */
 
 import * as THREE from 'three';
 
-const PLANE_SIZE = 120;
-const PLANE_SEGMENTS = 110;
-const PLANE_Y = -4;
+const STAGE_SIZE = 90;
+const STAGE_Y = 0;
 
-/** Overall vertical gain applied on top of state.waveAmplitude. */
-const AMPLITUDE_GAIN = 0.75;
+const VERTEX = /* glsl */ `
+varying vec2 vPos;
+void main() {
+  vPos = position.xy;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const FRAGMENT = /* glsl */ `
+uniform vec3 uColor;
+uniform float uTime;
+uniform float uGlow;
+varying vec2 vPos;
+
+// Anti-aliased line of width w (in world units) at distance d.
+float line(float d, float w) {
+  float aa = fwidth(d) * 1.2;
+  return 1.0 - smoothstep(w - aa, w + aa, abs(d));
+}
+
+void main() {
+  // Ring radii below are authored for a 1.35x larger car; scale them to fit.
+  float r = length(vPos) * 1.35;
+  float a = atan(vPos.y, vPos.x);
+  float glow = uGlow;
+
+  // Concentric platform rings under the car.
+  float rings = 0.0;
+  rings += line(r - 3.6, 0.05) * 1.0;
+  rings += line(r - 4.3, 0.025) * 0.7;
+  rings += line(r - 5.4, 0.04) * 0.9;
+  rings += line(r - 6.8, 0.02) * 0.5;
+
+  // Dashed rings that turn in opposite directions.
+  float dashA = step(0.5, fract((a + uTime * 0.35) * 24.0 / 6.2831853));
+  float dashB = step(0.35, fract((a - uTime * 0.22) * 60.0 / 6.2831853));
+  rings += line(r - 4.0, 0.06) * dashA * 0.8;
+  rings += line(r - 6.1, 0.04) * dashB * 0.6;
+
+  // Radial tick marks around the outer ring.
+  float ticks = line(fract(a * 72.0 / 6.2831853) - 0.5, 0.06) * step(5.6, r) * step(r, 5.9);
+
+  // A soft disc of light the car stands in.
+  float disc = smoothstep(4.8, 0.0, r) * 0.18;
+
+  // A faint floor grid that fades into the dark.
+  vec2 g = abs(fract(vPos * 0.5) - 0.5);
+  float grid = (1.0 - smoothstep(0.0, fwidth(vPos.x) * 1.5 + 0.01, min(g.x, g.y))) * 0.18;
+  grid *= smoothstep(38.0, 8.0, r);
+
+  // A slow pulse sweeping outward through the rings.
+  float sweep = smoothstep(0.35, 0.0, abs(r - mod(uTime * 2.2, 12.0))) * 0.35 * step(r, 7.5);
+
+  float fade = smoothstep(42.0, 6.0, r);
+  float a1 = (rings + ticks) * 0.9 + disc + grid + sweep;
+  gl_FragColor = vec4(uColor * a1 * glow, clamp(a1 * glow, 0.0, 1.0) * fade);
+}
+`;
 
 export class Terrain {
   readonly mesh: THREE.Mesh;
 
   private readonly geometry: THREE.PlaneGeometry;
-  private readonly material: THREE.MeshBasicMaterial;
-  private readonly position: THREE.BufferAttribute;
-  private readonly buffer: Float32Array;
-
-  /** Immutable per-vertex source values, cached once. */
-  private readonly baseX: Float32Array;
-  private readonly baseY: Float32Array;
-  private readonly baseR: Float32Array;
-
-  /**
-   * Per-vertex sin/cos of each wave's SPATIAL argument, plus the distance
-   * falloff. Every term has the form sin(kx + wt), which expands to
-   * sin(kx)cos(wt) + cos(kx)sin(wt) - so the only time-dependent parts are two
-   * scalars per wave, shared by every vertex.
-   *
-   * Evaluating it directly cost 2 sin + 2 cos + 1 exp on each of 12,321
-   * vertices, about 61,600 transcendental calls per frame. Hoisting leaves 8
-   * per frame in total and turns the inner loop into multiply-adds.
-   */
-  private readonly s1: Float32Array;
-  private readonly c1: Float32Array;
-  private readonly s2: Float32Array;
-  private readonly c2: Float32Array;
-  private readonly s3: Float32Array;
-  private readonly c3: Float32Array;
-  private readonly s4: Float32Array;
-  private readonly c4: Float32Array;
-  /** exp(-r * 0.018) * 0.55, folded together since neither depends on time. */
-  private readonly decay: Float32Array;
-
-  private amplitude = 1;
-  private amplitudeDirty = true;
-  /** Wave phase accumulated from (dt * velocity) so velocity changes never jump. */
-  private waveTime = 0;
-  private lastElapsed = -1;
+  private readonly material: THREE.ShaderMaterial;
+  private spin = 0;
+  private lastElapsed = 0;
 
   constructor(colorHex = '#00f0ff') {
-    this.geometry = new THREE.PlaneGeometry(
-      PLANE_SIZE,
-      PLANE_SIZE,
-      PLANE_SEGMENTS,
-      PLANE_SEGMENTS,
-    );
-
-    this.material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(colorHex),
-      wireframe: true,
+    this.geometry = new THREE.PlaneGeometry(STAGE_SIZE, STAGE_SIZE, 1, 1);
+    this.material = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(colorHex) },
+        uTime: { value: 0 },
+        uGlow: { value: 1 },
+      },
+      vertexShader: VERTEX,
+      fragmentShader: FRAGMENT,
       transparent: true,
-      opacity: 0.55,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
     });
-
     this.mesh = new THREE.Mesh(this.geometry, this.material);
+    this.mesh.name = 'wired-holo-stage';
     this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.y = PLANE_Y;
-    this.mesh.frustumCulled = false;
+    this.mesh.position.y = STAGE_Y;
+    // Never pickable: clicks pass through to the car or to empty space.
+    this.mesh.raycast = () => {};
     this.mesh.renderOrder = -1;
-    this.mesh.name = 'wired-terrain';
-
-    this.position = this.geometry.attributes.position as THREE.BufferAttribute;
-    this.buffer = this.position.array as Float32Array;
-
-    const count = this.position.count;
-    this.baseX = new Float32Array(count);
-    this.baseY = new Float32Array(count);
-    this.baseR = new Float32Array(count);
-    this.s1 = new Float32Array(count);
-    this.c1 = new Float32Array(count);
-    this.s2 = new Float32Array(count);
-    this.c2 = new Float32Array(count);
-    this.s3 = new Float32Array(count);
-    this.c3 = new Float32Array(count);
-    this.s4 = new Float32Array(count);
-    this.c4 = new Float32Array(count);
-    this.decay = new Float32Array(count);
-
-    for (let i = 0; i < count; i += 1) {
-      const x = this.buffer[i * 3];
-      const y = this.buffer[i * 3 + 1];
-      const r = Math.sqrt(x * x + y * y);
-      this.baseX[i] = x;
-      this.baseY[i] = y;
-      this.baseR[i] = r;
-
-      const a = x * 0.16;
-      const b = y * 0.19;
-      const c = (x + y) * 0.085;
-      const d = r * 0.22;
-      this.s1[i] = Math.sin(a);
-      this.c1[i] = Math.cos(a);
-      this.s2[i] = Math.sin(b);
-      this.c2[i] = Math.cos(b);
-      this.s3[i] = Math.sin(c);
-      this.c3[i] = Math.cos(c);
-      this.s4[i] = Math.sin(d);
-      this.c4[i] = Math.cos(d);
-      this.decay[i] = Math.exp(-r * 0.018) * 0.55;
-    }
-
-    // Seed the surface so the very first rendered frame is already sculpted.
-    this.writeHeights();
   }
 
-  /** The object to add to the scene. */
   get object3d(): THREE.Object3D {
     return this.mesh;
   }
 
   setColor(hex: string): void {
-    this.material.color.set(hex);
+    (this.material.uniforms.uColor.value as THREE.Color).set(hex);
   }
 
+  /** Was wave height; now the stage's brightness (0..4, 1 = default). */
   setAmplitude(value: number): void {
-    if (!Number.isFinite(value) || value === this.amplitude) return;
-    this.amplitude = value;
-    this.amplitudeDirty = true;
+    if (!Number.isFinite(value)) return;
+    this.material.uniforms.uGlow.value = 0.15 + Math.min(4, Math.max(0, value)) * 0.85;
   }
 
-  /**
-   * @param elapsed  seconds since the engine clock started
-   * @param velocity effective wave speed (state.waveVelocity, possibly boosted by a pulse)
-   */
+  /** Was wave speed; now how fast the rings turn. */
   update(elapsed: number, velocity: number): void {
-    if (this.lastElapsed < 0) this.lastElapsed = elapsed;
-    const dt = Math.max(0, Math.min(0.25, elapsed - this.lastElapsed));
+    const dt = Math.min(0.1, Math.max(0, elapsed - this.lastElapsed));
     this.lastElapsed = elapsed;
-
-    const advance = dt * (Number.isFinite(velocity) ? velocity : 0);
-
-    // Frozen wave + unchanged amplitude means the buffer is already correct.
-    if (advance === 0 && !this.amplitudeDirty) return;
-
-    this.waveTime += advance;
-    this.writeHeights();
-  }
-
-  private writeHeights(): void {
-    const t = this.waveTime;
-    const amp = this.amplitude * AMPLITUDE_GAIN;
-    const count = this.position.count;
-    const buf = this.buffer;
-
-    // Eight trig calls for the whole frame, not eight per vertex. Identical
-    // output to the direct form: sin(kx + wt) = sin(kx)cos(wt) + cos(kx)sin(wt),
-    // and cos(kx - wt) = cos(kx)cos(wt) + sin(kx)sin(wt).
-    const sT1 = Math.sin(t * 1.1);
-    const cT1 = Math.cos(t * 1.1);
-    const sT2 = Math.sin(t * 0.85);
-    const cT2 = Math.cos(t * 0.85);
-    const sT3 = Math.sin(t * 0.55);
-    const cT3 = Math.cos(t * 0.55);
-    const sT4 = Math.sin(t * 1.6);
-    const cT4 = Math.cos(t * 1.6);
-
-    const s1 = this.s1;
-    const c1 = this.c1;
-    const s2 = this.s2;
-    const c2 = this.c2;
-    const s3 = this.s3;
-    const c3 = this.c3;
-    const s4 = this.s4;
-    const c4 = this.c4;
-    const decay = this.decay;
-
-    // Four layered terms of different frequency, direction and phase so the
-    // surface reads as an organic topographic landscape rather than one sheet.
-    for (let i = 0; i < count; i += 1) {
-      const h =
-        0.9 * (s1[i] * cT1 + c1[i] * sT1) +
-        0.75 * (c2[i] * cT2 + s2[i] * sT2) +
-        1.2 * (s3[i] * cT3 + c3[i] * sT3) +
-        decay[i] * (c4[i] * cT4 + s4[i] * sT4);
-
-      buf[i * 3 + 2] = h * amp;
-    }
-
-    this.position.needsUpdate = true;
-    this.amplitudeDirty = false;
+    this.spin += dt * Math.max(0, velocity);
+    this.material.uniforms.uTime.value = this.spin;
   }
 
   dispose(): void {
-    if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
     this.geometry.dispose();
     this.material.dispose();
   }

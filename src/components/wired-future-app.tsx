@@ -63,7 +63,7 @@ export default function WiredFutureApp() {
       <div className="wf-rail wf-rail--right">
         <AgentSimulator getEngine={getEngine} />
         <SelectionPanel getEngine={getEngine} />
-        <HandsPanel />
+        <HandsPanel getEngine={getEngine} />
         <PhotoPanel getEngine={getEngine} />
       </div>
       <StatusBar />

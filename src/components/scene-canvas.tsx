@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { WiredEngine } from '@/scene/contract';
+import { actuatePart } from '@/store/part-actions';
 import { useWired } from '@/store/use-wired';
 
 interface SceneCanvasProps {
@@ -59,34 +60,29 @@ export default function SceneCanvas({ onReady }: SceneCanvasProps) {
           useWired.getState().setNodeTransform(id, next, 'human', !settled);
         });
 
-        // Ctrl-click runs whatever the part DOES. A hinged assembly swings
-        // open or shut; anything else pops off and back on. Deciding that here
-        // rather than in the engine keeps "what a door does" as state, and
-        // routes it through the same reducer an agent would call.
-        engine.onActuate(({ node, assembly, hinged }) => {
+        engine.onAssemblyTransformChange((id, next, settled) => {
+          if (disposed) return;
+          useWired.getState().setAssemblyTransform(id, next, 'human', !settled);
+        });
+
+        // Grabbing the canvas while the scripted orbit runs hands the camera
+        // to the person holding the mouse. The store owns that flag, so the
+        // Control Deck's checkbox and the agent's state readout both follow.
+        engine.onCameraTakeover(() => {
           if (disposed) return;
           const store = useWired.getState();
-          const rig = store.carRig;
+          if (!store.camera.autoOrbit) return;
+          store.apply({ camera: { ...store.camera, autoOrbit: false } }, 'human');
+        });
 
-          if (hinged) {
-            const key =
-              assembly === 'doorLeft'
-                ? 'doorLeft'
-                : assembly === 'doorRight'
-                  ? 'doorRight'
-                  : 'hood';
-            const open = rig[key] > 0.5 ? 0 : 1;
-            store.apply({ carRig: { ...rig, [key]: open } }, 'human');
-            return;
-          }
-
-          const hiddenNow = rig.hiddenNodes.includes(node);
-          store.setNodeHidden(
-            hiddenNow
-              ? rig.hiddenNodes.filter((x) => x !== node)
-              : [...rig.hiddenNodes, node],
-            'human',
-          );
+        // Ctrl-click runs whatever the part DOES: a hinged assembly swings open
+        // or shut, anything else pops off and back on, and a removed part is
+        // put back. Deciding that outside the engine keeps "what a door does"
+        // as state, routed through the same reducer an agent calls; a
+        // pinch-tap from a webcam hand runs the same function.
+        engine.onActuate((target) => {
+          if (disposed) return;
+          actuatePart(target, 'human');
         });
 
         onReady(engine);

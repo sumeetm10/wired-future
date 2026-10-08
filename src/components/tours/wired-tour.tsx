@@ -45,7 +45,7 @@ const STEPS: TourStep[] = [
     sel: '#tour-hands',
     title: 'Hand control',
     body:
-      'Turn the camera on and pinch. One hand drags the car; pinch both hands and pull them apart to explode it. The video never leaves this tab.',
+      'Turn the camera on and point: a cursor follows your hand. Pinch a door to swing it open, pinch a window or a wheel to carry it off. The video never leaves this tab.',
   },
   {
     sel: '#tour-photo',

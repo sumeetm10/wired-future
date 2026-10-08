@@ -11,8 +11,11 @@ export type ModelType = 'car' | 'engine' | 'photo';
 export type CarVariant = 'real' | 'parametric';
 /** 'orbit' flies the camera; the rest arm the transform gizmo on the model. */
 export type EditMode = 'orbit' | 'translate' | 'rotate' | 'scale';
-/** 'paint' is the asset's own PBR finish; 'print' is matte resin grey. */
-export type CarFinish = 'paint' | 'print';
+/**
+ * 'hologram' is glowing projected light (the default); 'paint' is the asset's
+ * own PBR finish; 'print' is matte resin grey.
+ */
+export type CarFinish = 'hologram' | 'paint' | 'print';
 
 /**
  * Assemblies the concept car can be taken apart into. These ids are the API
@@ -112,7 +115,7 @@ export type ActionOrigin = 'human' | 'agent' | 'system' | 'hand';
 export const MODEL_TYPES: ModelType[] = ['car', 'engine', 'photo'];
 export const CAR_VARIANTS: CarVariant[] = ['real', 'parametric'];
 export const EDIT_MODES: EditMode[] = ['orbit', 'translate', 'rotate', 'scale'];
-export const CAR_FINISHES: CarFinish[] = ['paint', 'print'];
+export const CAR_FINISHES: CarFinish[] = ['hologram', 'paint', 'print'];
 export const PART_MATERIAL_IDS: PartMaterialId[] = [
   'steel',
   'aluminium',
@@ -220,6 +223,12 @@ export interface CarRigState {
   hiddenNodes: string[];
   /** Free transforms on individual meshes, by node id. */
   nodeTransforms: Record<string, NodeTransform>;
+  /**
+   * Gizmo placement of whole assemblies, layered ON TOP of explode and the
+   * hinge swing, so dragging a door out and then opening it still swings it
+   * about its own hinge. Absent means the assembly sits where it shipped.
+   */
+  assemblyTransforms: Partial<Record<CarPartId, NodeTransform>>;
   /** What the gizmo is currently attached to. */
   selection: Selection | null;
   /** Per-part reshaping. Absent means the part is untouched. */
@@ -250,7 +259,7 @@ export const DEFAULT_STATE: WiredState = {
   modelType: 'car',
   carVariant: 'real',
   carRig: {
-    finish: 'paint',
+    finish: 'hologram',
     explode: 0,
     doorLeft: 0,
     doorRight: 0,
@@ -258,6 +267,7 @@ export const DEFAULT_STATE: WiredState = {
     hidden: [],
     hiddenNodes: [],
     nodeTransforms: {},
+    assemblyTransforms: {},
     selection: null,
     edits: {},
   },
@@ -324,6 +334,32 @@ function wrapDegrees(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
   const wrapped = ((((value + 180) % 360) + 360) % 360) - 180;
   return Math.round(wrapped * 100) / 100;
+}
+
+/** Clamp one free transform. Shared by single meshes and whole assemblies. */
+function sanitizeNodeTransform(t: Partial<NodeTransform>): NodeTransform {
+  return {
+    x: clampOr(t.x, NODE_LIMITS.offset, 0),
+    y: clampOr(t.y, NODE_LIMITS.offset, 0),
+    z: clampOr(t.z, NODE_LIMITS.offset, 0),
+    rotX: wrapDegrees(t.rotX),
+    rotY: wrapDegrees(t.rotY),
+    rotZ: wrapDegrees(t.rotZ),
+    scale: clampOr(t.scale, NODE_LIMITS.scale, 1),
+  };
+}
+
+/** True when a transform is indistinguishable from the rest pose. */
+function isIdentityTransform(t: NodeTransform): boolean {
+  return (
+    Math.abs(t.x) < 1e-4 &&
+    Math.abs(t.y) < 1e-4 &&
+    Math.abs(t.z) < 1e-4 &&
+    Math.abs(t.rotX) < 1e-3 &&
+    Math.abs(t.rotY) < 1e-3 &&
+    Math.abs(t.rotZ) < 1e-3 &&
+    Math.abs(t.scale - 1) < 1e-4
+  );
 }
 
 /** Accepts "0ff", "#0ff", "00ffcc", "#00ffcc". Returns null when unparseable. */
@@ -405,18 +441,18 @@ export function sanitizePatch(patch: Partial<WiredState>): Partial<WiredState> {
       const out: Record<string, NodeTransform> = {};
       for (const [key, value] of Object.entries(src.nodeTransforms)) {
         if (!value) continue;
-        const t = value as Partial<NodeTransform>;
-        out[key] = {
-          x: clampOr(t.x, NODE_LIMITS.offset, 0),
-          y: clampOr(t.y, NODE_LIMITS.offset, 0),
-          z: clampOr(t.z, NODE_LIMITS.offset, 0),
-          rotX: wrapDegrees(t.rotX),
-          rotY: wrapDegrees(t.rotY),
-          rotZ: wrapDegrees(t.rotZ),
-          scale: clampOr(t.scale, NODE_LIMITS.scale, 1),
-        };
+        out[key] = sanitizeNodeTransform(value as Partial<NodeTransform>);
       }
       rig.nodeTransforms = out;
+    }
+
+    if (src.assemblyTransforms && typeof src.assemblyTransforms === 'object') {
+      const out: Partial<Record<CarPartId, NodeTransform>> = {};
+      for (const [key, value] of Object.entries(src.assemblyTransforms)) {
+        if (!value || !CAR_PART_IDS.includes(key as CarPartId)) continue;
+        out[key as CarPartId] = sanitizeNodeTransform(value as Partial<NodeTransform>);
+      }
+      rig.assemblyTransforms = out;
     }
 
     if (src.edits && typeof src.edits === 'object') {
@@ -687,6 +723,17 @@ export interface WiredStore extends WiredState {
     origin: ActionOrigin,
     silent?: boolean,
   ) => string;
+  /**
+   * Place a whole assembly (a door, the hood, a wheel set) with the gizmo.
+   * Layered on top of explode and the hinge, and `silent` like the others.
+   * An identity transform removes the entry rather than storing a no-op.
+   */
+  setAssemblyTransform: (
+    id: CarPartId,
+    next: NodeTransform,
+    origin: ActionOrigin,
+    silent?: boolean,
+  ) => string;
   /** Detach or refit individual meshes by node id. */
   setNodeHidden: (ids: string[], origin: ActionOrigin) => string;
 
@@ -719,7 +766,15 @@ function describe(patch: Partial<WiredState>): string[] {
   if (patch.carRig) {
     const r = patch.carRig;
     const bits: string[] = [];
-    if (r.finish) bits.push(r.finish === 'print' ? '3D-print finish' : 'painted finish');
+    if (r.finish) {
+      bits.push(
+        r.finish === 'print'
+          ? '3D-print finish'
+          : r.finish === 'hologram'
+            ? 'hologram finish'
+            : 'painted finish',
+      );
+    }
     if (r.explode !== undefined) bits.push('explode ' + Math.round(r.explode * 100) + '%');
     if (r.doorLeft !== undefined) bits.push('left door ' + Math.round(r.doorLeft * 100) + '%');
     if (r.doorRight !== undefined) bits.push('right door ' + Math.round(r.doorRight * 100) + '%');
@@ -740,6 +795,10 @@ function describe(patch: Partial<WiredState>): string[] {
     if (r.nodeTransforms) {
       const moved = Object.keys(r.nodeTransforms).length;
       bits.push(moved ? moved + ' parts moved by hand' : 'no parts moved');
+    }
+    if (r.assemblyTransforms) {
+      const moved = Object.keys(r.assemblyTransforms);
+      bits.push(moved.length ? 'repositioned: ' + moved.join(', ') : 'assemblies in place');
     }
     if (r.edits) {
       const touched = Object.keys(r.edits);
@@ -914,17 +973,17 @@ export const useWired = create<WiredStore>((set, get) => ({
   },
 
   setNodeTransform: (id, next, origin, silent = false) => {
-    const patch = sanitizePatch({
-      carRig: {
-        ...get().carRig,
-        nodeTransforms: { ...get().carRig.nodeTransforms, [id]: next },
-      },
-    } as Partial<WiredState>);
-
-    if (patch.carRig?.nodeTransforms) {
-      const clean = patch.carRig.nodeTransforms;
+    // Sanitise ONLY the entry being written. Re-sanitising the whole map gave
+    // every other node a fresh object identity, and the engine reconciles by
+    // identity - so a gizmo drag on one wing mirror re-applied every moved part
+    // in the car on every pointer move.
+    if (typeof id === 'string' && id) {
+      const clean = sanitizeNodeTransform(next);
       set((s) => ({
-        carRig: { ...s.carRig, nodeTransforms: clean },
+        carRig: {
+          ...s.carRig,
+          nodeTransforms: { ...s.carRig.nodeTransforms, [id]: clean },
+        },
         agentActionCount:
           origin === 'agent' && !silent
             ? s.agentActionCount + 1
@@ -938,6 +997,35 @@ export const useWired = create<WiredStore>((set, get) => ({
         t.x.toFixed(2) + '/' + t.y.toFixed(2) + '/' + t.z.toFixed(2) +
         ', scale ' + t.scale.toFixed(2)
       : 'part ' + id + ' reset';
+
+    if (!silent) get().log(origin, message);
+    return message;
+  },
+
+  setAssemblyTransform: (id, next, origin, silent = false) => {
+    if (!CAR_PART_IDS.includes(id)) return 'unknown assembly "' + String(id) + '"';
+
+    const clean = sanitizeNodeTransform(next);
+    const identity = isIdentityTransform(clean);
+    set((s) => {
+      const map = { ...s.carRig.assemblyTransforms };
+      if (identity) delete map[id];
+      else map[id] = clean;
+      return {
+        carRig: { ...s.carRig, assemblyTransforms: map },
+        agentActionCount:
+          origin === 'agent' && !silent
+            ? s.agentActionCount + 1
+            : s.agentActionCount,
+      };
+    });
+
+    const label = CAR_PART_LABELS[id] ?? id;
+    const message = identity
+      ? label + ' back in its fitted position'
+      : 'placed ' + label + ' at ' +
+        clean.x.toFixed(2) + '/' + clean.y.toFixed(2) + '/' + clean.z.toFixed(2) +
+        ', scale ' + clean.scale.toFixed(2);
 
     if (!silent) get().log(origin, message);
     return message;
@@ -984,6 +1072,7 @@ export const useWired = create<WiredStore>((set, get) => ({
         hidden: [...s.carRig.hidden],
         hiddenNodes: [...s.carRig.hiddenNodes],
         nodeTransforms: { ...s.carRig.nodeTransforms },
+        assemblyTransforms: { ...s.carRig.assemblyTransforms },
         selection: s.carRig.selection ? { ...s.carRig.selection } : null,
         edits: { ...s.carRig.edits },
       },

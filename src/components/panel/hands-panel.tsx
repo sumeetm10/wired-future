@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { createHandController, type HandMode } from '@/hands/controller';
-import { startHandTracker, type HandFrame, type HandTracker } from '@/hands/tracker';
+// Types only: the hand code itself is imported when the camera starts.
+import type { HandController } from '@/hands/controller';
+import type { HandCursorLayer } from '@/hands/cursor-layer';
+import type { HandFrame, HandTracker } from '@/hands/tracker';
+import type { WiredEngine } from '@/scene/contract';
 import { useWired } from '@/store/use-wired';
 
 /**
@@ -20,12 +23,6 @@ const BONES: Array<[number, number]> = [
   [0, 17],
 ];
 
-const MODE_LABEL: Record<HandMode, string> = {
-  idle: 'ready - pinch to grab',
-  move: 'moving the car',
-  explode: 'exploding',
-};
-
 /** Collapsed by default on a phone, where the rail is a stack of sheets. */
 function useStartsOpen() {
   const [open, setOpen] = useState(true);
@@ -36,19 +33,27 @@ function useStartsOpen() {
   return [open, setOpen] as const;
 }
 
-export function HandsPanel() {
+export interface HandsPanelProps {
+  getEngine: () => WiredEngine | null;
+}
+
+export function HandsPanel({ getEngine }: HandsPanelProps) {
   const [open, setOpen] = useStartsOpen();
   const [on, setOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('camera off');
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<HandMode>('idle');
-  const [pinches, setPinches] = useState<number[]>([]);
+  // Set on every camera frame; React skips the render when the value is the
+  // same, so these only cost anything when something actually changed.
+  const [label, setLabel] = useState('');
+  const [handCount, setHandCount] = useState(0);
+  const [pinch, setPinch] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const trackerRef = useRef<HandTracker | null>(null);
-  const controllerRef = useRef<ReturnType<typeof createHandController> | null>(null);
+  const controllerRef = useRef<HandController | null>(null);
+  const cursorsRef = useRef<HandCursorLayer | null>(null);
 
   const bodyId = 'wf-hands-body';
 
@@ -96,15 +101,20 @@ export function HandsPanel() {
   const stop = useCallback((message = 'camera off') => {
     trackerRef.current?.stop();
     trackerRef.current = null;
+    // Let go of whatever a hand still holds, committing it, before the
+    // cursors that show it disappear.
     controllerRef.current?.release();
     controllerRef.current = null;
+    cursorsRef.current?.dispose();
+    cursorsRef.current = null;
     const ctx = canvasRef.current?.getContext('2d');
     if (ctx && canvasRef.current) {
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
     setOn(false);
-    setMode('idle');
-    setPinches([]);
+    setLabel('');
+    setHandCount(0);
+    setPinch(0);
     setStatus(message);
   }, []);
 
@@ -117,47 +127,63 @@ export function HandsPanel() {
     // read frames from, and a hidden one reports zero dimensions forever.
     setOn(true);
 
-    const controller = createHandController();
-    controllerRef.current = controller;
-
     try {
+      // Loaded with the camera, not with the page: a visitor who never turns
+      // it on never downloads the hand code, let alone MediaPipe.
+      const [{ createHandController }, { HandCursorLayer }, { startHandTracker }] =
+        await Promise.all([
+          import('@/hands/controller'),
+          import('@/hands/cursor-layer'),
+          import('@/hands/tracker'),
+        ]);
+
+      const cursors = new HandCursorLayer(document.body);
+      cursorsRef.current = cursors;
+      const controller = createHandController({ getEngine, cursors });
+      controllerRef.current = controller;
+
       const tracker = await startHandTracker({
         video,
         onStatus: setStatus,
         onError: (m) => setError(m),
         onFrame: (frame) => {
           const next = controller.onFrame(frame);
-          setMode(next.mode);
-          setPinches(next.pinches);
+          setLabel(next.label);
+          setHandCount(next.hands);
+          setPinch(Math.round(next.pinch * 20) / 20);
           draw(frame);
         },
       });
       trackerRef.current = tracker;
       useWired
         .getState()
-        .log('hand', 'camera on - pinch to move, two hands to explode');
+        .log('hand', 'camera on - point at a part and pinch to hold it');
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      const denied = /denied|not allowed|dismissed/i.test(detail);
+      const name = err instanceof DOMException ? err.name : '';
+      const denied = name === 'NotAllowedError' || /denied|not allowed|dismissed/i.test(detail);
       setError(
         denied
           ? 'camera permission was refused - allow it in the address bar to use gestures'
-          : detail,
+          : name === 'NotFoundError'
+            ? 'no camera found - check it is switched on (some laptops have a camera key or shutter) and that Windows camera access is on'
+            : name === 'NotReadableError'
+              ? 'the camera is busy - close any other app or tab using it (Zoom, Teams, another browser tab) and try again'
+              : detail,
       );
       stop('camera off');
     } finally {
       setBusy(false);
     }
-  }, [busy, draw, stop]);
+  }, [busy, draw, getEngine, stop]);
 
   // Release the camera on unmount. Leaving it running keeps the recording
   // light on after the panel is gone.
   useEffect(() => () => {
     trackerRef.current?.stop();
     controllerRef.current?.release();
+    cursorsRef.current?.dispose();
   }, []);
-
-  const strongest = pinches.length ? Math.max(...pinches) : 0;
 
   return (
     <section className="wf-dock wf-dock--hands" aria-label="Hand control">
@@ -182,7 +208,8 @@ export function HandsPanel() {
           }
         >
           <p className="wf-note">
-            Move the car with your hands. Tracking runs in this browser tab —
+            Point at the car with your hand, then pinch your thumb and index
+            finger together to hold a part. Tracking runs in this browser tab -
             the video is never uploaded or recorded.
           </p>
 
@@ -196,19 +223,19 @@ export function HandsPanel() {
           </div>
 
           <div className="wf-row">
-            <span className="wf-label">
-              {on ? MODE_LABEL[mode] : status}
+            <span className="wf-label" aria-live="polite">
+              {on ? label || status : status}
             </span>
             <span className="wf-readout">
-              {on ? pinches.length + ' HAND' + (pinches.length === 1 ? '' : 'S') : ''}
+              {on ? handCount + ' HAND' + (handCount === 1 ? '' : 'S') : ''}
             </span>
           </div>
 
           {on ? (
             <div className="wf-meter" aria-hidden="true">
               <span
-                className={'wf-meter__fill' + (strongest > 0.7 ? ' is-hot' : '')}
-                style={{ width: Math.round(strongest * 100) + '%' }}
+                className={'wf-meter__fill' + (pinch > 0.7 ? ' is-hot' : '')}
+                style={{ width: Math.round(pinch * 100) + '%' }}
               />
             </div>
           ) : null}
@@ -228,16 +255,29 @@ export function HandsPanel() {
 
           <ul className="wf-gestures">
             <li>
-              <strong>pinch one hand</strong> — grab the car and drag it with
-              your hand.
+              <strong>point</strong> - a cursor follows the gap between your
+              thumb and index finger, and the part under it glows.
             </li>
             <li>
-              <strong>pinch both hands</strong> — pull them apart to explode the
-              car, bring them together to reassemble it.
+              <strong>pinch a door or the hood</strong> - hold it and move your
+              hand: it swings on its hinge with you.
             </li>
             <li>
-              <strong>open your hand</strong> — let go. The trace logs the
-              result as <strong>[HAND]</strong>.
+              <strong>pinch any other part</strong> - a window, a wheel, a
+              mirror: carry it, then open your fingers to let go.
+            </li>
+            <li>
+              <strong>quick pinch</strong> - opens or shuts, pops a part off, or
+              puts it back, like Ctrl-click.
+            </li>
+            <li>
+              <strong>pinch empty space</strong> - move your hand to turn the
+              view around the car.
+            </li>
+            <li>
+              <strong>both hands in empty space</strong> - spread to explode,
+              move together to carry the car, twist to turn it. The trace logs
+              each result as <strong>[HAND]</strong>.
             </li>
           </ul>
         </div>

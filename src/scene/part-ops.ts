@@ -413,6 +413,9 @@ export function applyEditToMeshes(
     if (!normalsStillValid) geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
+    // A picking tree built on the old vertices would select where the part
+    // USED to be. refit() re-bounds the existing tree in one linear pass.
+    (geometry as { boundsTree?: { refit: () => void } }).boundsTree?.refit();
   }
 }
 

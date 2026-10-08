@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 import type { WiredEngine } from '@/scene/contract';
 import {
@@ -44,12 +51,17 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
   const selection = useWired((s) => s.carRig.selection);
   const hiddenNodes = useWired((s) => s.carRig.hiddenNodes);
   const nodeTransforms = useWired((s) => s.carRig.nodeTransforms);
+  const hiddenAssemblies = useWired((s) => s.carRig.hidden);
+  const assemblyTransforms = useWired((s) => s.carRig.assemblyTransforms);
   const carVariant = useWired((s) => s.carVariant);
   const modelType = useWired((s) => s.modelType);
 
   const [open, setOpen] = useStartsOpen();
   const [nodes, setNodes] = useState<NodeRow[]>([]);
   const [filter, setFilter] = useState('');
+  const [modelVersion, setModelVersion] = useState(0);
+  const [modelName, setModelName] = useState<string | null>(null);
+  const [modelStatus, setModelStatus] = useState('');
 
   // The node list only exists once the glTF has loaded, so poll briefly rather
   // than guess when that happened.
@@ -69,7 +81,46 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [getEngine, carVariant, modelType]);
+  }, [getEngine, carVariant, modelType, modelVersion]);
+
+  /* --- loading a different car -------------------------------------------- */
+
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const urlRef = useRef<string | null>(null);
+
+  const loadModel = useCallback(
+    async (file: File | null) => {
+      const engine = getEngine();
+      if (!engine) return;
+      if (file && !/\.(glb|gltf)$/i.test(file.name)) {
+        setModelStatus('choose a .glb file');
+        return;
+      }
+      const url = file ? URL.createObjectURL(file) : null;
+      setModelStatus(file ? 'loading ' + file.name + '...' : 'loading the concept car...');
+      setNodes([]);
+      // Parts of the old car mean nothing on the new one.
+      useWired.getState().select(null, 'human');
+      try {
+        const { parts } = await engine.setCarModel(url);
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+        urlRef.current = url;
+        setModelName(file ? file.name : null);
+        setModelStatus(parts ? parts + ' parts found' : '');
+        useWired.getState().log('human', (file ? 'loaded car model ' + file.name : 'back to the concept car') + (parts ? ' - ' + parts + ' parts' : ''));
+      } catch (err) {
+        if (url) URL.revokeObjectURL(url);
+        setModelStatus(err instanceof Error ? err.message : 'could not load that model');
+      } finally {
+        setModelVersion((v) => v + 1);
+      }
+    },
+    [getEngine],
+  );
+
+  useEffect(() => () => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+  }, []);
 
   const visible = modelType === 'car' && carVariant === 'real';
 
@@ -108,6 +159,28 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
       .getState()
       .setNodeTransform(selection.id, { ...IDENTITY_NODE_TRANSFORM }, 'human');
   }, [selection]);
+
+  const assemblyId =
+    selection && selection.level === 'assembly' ? (selection.id as CarPartId) : null;
+  const assemblyHidden = assemblyId ? hiddenAssemblies.includes(assemblyId) : false;
+  const assemblyMoved = assemblyId ? Boolean(assemblyTransforms[assemblyId]) : false;
+
+  const toggleAssembly = useCallback(() => {
+    if (!assemblyId) return;
+    const store = useWired.getState();
+    const rig = store.carRig;
+    const hidden = rig.hidden.includes(assemblyId)
+      ? rig.hidden.filter((x) => x !== assemblyId)
+      : [...rig.hidden, assemblyId];
+    store.apply({ carRig: { ...rig, hidden } }, 'human');
+  }, [assemblyId]);
+
+  const resetAssembly = useCallback(() => {
+    if (!assemblyId) return;
+    useWired
+      .getState()
+      .setAssemblyTransform(assemblyId, { ...IDENTITY_NODE_TRANSFORM }, 'human');
+  }, [assemblyId]);
 
   const nudge = useCallback(
     (part: Partial<typeof IDENTITY_NODE_TRANSFORM>) => {
@@ -148,6 +221,49 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
             'wf-panel__body wf-scroll wf-collapsible' + (open ? ' is-open' : '')
           }
         >
+          <div
+            className="wf-field wf-modelload"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              void loadModel(e.dataTransfer.files?.[0] ?? null);
+            }}
+          >
+            <span className="wf-label">Car model</span>
+            <div className="wf-row">
+              <span className="wf-note">{modelName ?? 'Concept car'}</span>
+              <span className="wf-row" style={{ gap: 6 }}>
+                <button
+                  type="button"
+                  className="wf-button wf-button--chip"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  Load .glb
+                </button>
+                {modelName ? (
+                  <button
+                    type="button"
+                    className="wf-button wf-button--chip wf-button--ghost"
+                    onClick={() => void loadModel(null)}
+                  >
+                    Default
+                  </button>
+                ) : null}
+              </span>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".glb,.gltf,model/gltf-binary"
+              className="wf-visually-hidden"
+              onChange={(e) => {
+                void loadModel(e.target.files?.[0] ?? null);
+                e.target.value = '';
+              }}
+            />
+            {modelStatus ? <span className="wf-note">{modelStatus}</span> : null}
+          </div>
+
           <p className="wf-note">
             Click a part to select its assembly. Then, holding{' '}
             <strong>Ctrl</strong> (or Cmd) over any part:
@@ -166,6 +282,10 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
             </li>
           </ul>
           <p className="wf-note">
+            <strong>Double-click</strong> a part to fly the camera to it, and
+            empty space to fly back.
+          </p>
+          <p className="wf-note">
             {nodes.length || 109} parts, down to individual handles, wipers and
             brake discs.
           </p>
@@ -181,6 +301,34 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
               </span>
             ) : null}
           </div>
+
+          {assemblyId ? (
+            <>
+              <div className="wf-row">
+                <button
+                  type="button"
+                  className={
+                    'wf-button wf-button--chip' + (assemblyHidden ? '' : ' is-active')
+                  }
+                  onClick={toggleAssembly}
+                >
+                  {assemblyHidden ? 'Refit' : 'Detach'}
+                </button>
+                <button
+                  type="button"
+                  className="wf-button wf-button--chip wf-button--ghost"
+                  disabled={!assemblyMoved}
+                  onClick={resetAssembly}
+                >
+                  Reset Placement
+                </button>
+              </div>
+              <span className="wf-note">
+                Move, Rotate and Scale in the Control Deck now drag this whole
+                assembly, and it keeps opening on its own hinge.
+              </span>
+            </>
+          ) : null}
 
           {selection && selection.level === 'node' && selectedNodeTransform ? (
             <>
@@ -317,6 +465,13 @@ export function SelectionPanel({ getEngine }: SelectionPanelProps) {
   );
 }
 
+/** Where the thumb sits, as a CSS percentage, for the lit part of the track. */
+function fillPercent(value: number, min: number, max: number): string {
+  const span = max - min;
+  const t = span > 0 ? (value - min) / span : 0;
+  return Math.max(0, Math.min(100, t * 100)).toFixed(2) + '%';
+}
+
 function RangeRow(props: {
   label: string;
   value: number;
@@ -346,6 +501,7 @@ function RangeRow(props: {
         max={props.max}
         step={props.step}
         value={props.value}
+        style={{ '--wf-fill': fillPercent(props.value, props.min, props.max) } as CSSProperties}
         onChange={(e) => props.onChange(Number(e.target.value))}
       />
     </div>

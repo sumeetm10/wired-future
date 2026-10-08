@@ -11,6 +11,12 @@
  * resin-grey, which is how you actually read the geometry of a model whose
  * paint is doing most of the visual work.
  *
+ * Motion is animated rather than applied: setExplode / setDoor / setHood set a
+ * TARGET, and update(dt) springs the car towards it, so a door an agent opens
+ * swings open instead of teleporting. Hiding a part pops it off and showing it
+ * pops it back. settle() jumps everything to its target, for snapshots and for
+ * visitors who ask for reduced motion.
+ *
  * No React, no store imports. Pure three.js.
  */
 
@@ -27,6 +33,8 @@ import {
   measureMeshes,
   type PartMeasurement,
 } from './part-ops';
+import { createHologram } from './hologram';
+import { carFrame, classifyMeshes } from './classify-generic';
 
 export type CarPartId =
   | 'body'
@@ -75,7 +83,7 @@ export const CAR_PART_LABELS: Record<CarPartId, string> = {
   wheelRR: 'Wheel Rear R',
 };
 
-export type CarFinish = 'paint' | 'print';
+export type CarFinish = 'hologram' | 'paint' | 'print';
 
 /**
  * One individually addressable mesh from the glTF - a door handle, a wiper, a
@@ -197,6 +205,18 @@ interface CarNode {
   /** Rest position of the node pivot, before any user transform. */
   basePosition: THREE.Vector3;
   triangles: number;
+  /**
+   * Sits between the pivot and the mesh and exists only for the pop animation.
+   * Scaling the pivot would fight the user's own scale; this group is at the
+   * pivot origin (the part's centre), so it shrinks the part about its centre.
+   */
+  pop: THREE.Group;
+  /** 1 fully shown, 0 fully hidden. Only differs from the target mid-pop. */
+  popValue: number;
+  popFrom: number;
+  popTo: number;
+  /** Seconds into the current pop; -1 when at rest. */
+  popClock: number;
 }
 
 interface Assembly {
@@ -228,6 +248,10 @@ interface Assembly {
   /** Unit direction this assembly flies out along when exploded. */
   explodeDir: THREE.Vector3;
   hinge: Hinge | null;
+  /** Gizmo placement, layered on top of explode (position) and hinge (rotation). */
+  userOffset: THREE.Vector3;
+  userQuat: THREE.Quaternion;
+  userScale: number;
 }
 
 export interface CarRig {
@@ -245,21 +269,137 @@ export interface CarRig {
   readNodeTransform: (id: string) => NodeTransform | null;
   /** Direction this part slides when dragged out, in world space. */
   nodeOutwardWorld: (id: string) => THREE.Vector3 | null;
+  /**
+   * The same direction in the frame node offsets live in (the assembly's).
+   * A drag must write THIS into the offset: the world vector is only right
+   * while nothing above the part is rotated.
+   */
+  nodeOutwardLocal: (id: string) => THREE.Vector3 | null;
   /** Whether this assembly has a hinge, i.e. whether a click can open it. */
   hasHinge: (assembly: CarPartId) => boolean;
+  /** Where the hinge is right now, mid-swing included: 0 shut, 1 open. */
+  hingeValue: (assembly: CarPartId) => number;
+  /**
+   * World position `local` (a point in the assembly pivot's frame) WOULD have
+   * if the hinge stood at `t`, everything else as it is now. The caller must
+   * have updated the pivot's parent world matrix. False without a hinge.
+   */
+  hingeWorldPoint: (
+    assembly: CarPartId,
+    t: number,
+    local: THREE.Vector3,
+    out: THREE.Vector3,
+  ) => boolean;
   /** Real geometry measurements for one assembly, or null if absent. */
   measurePart: (id: CarPartId) => PartMeasurement | null;
   /** Reshape and re-material one assembly. Absolute, not cumulative. */
   setPartEdit: (id: CarPartId, edit: PartEdit) => void;
   setFinish: (finish: CarFinish) => void;
+  /** Colour of the hologram finish: the palette's primary. */
+  setHologramColor: (hex: string) => void;
   setExplode: (t: number) => void;
   setDoor: (side: 'left' | 'right', t: number) => void;
   setHood: (t: number) => void;
   setHidden: (ids: CarPartId[]) => void;
+  /** Place a whole assembly, on top of explode and the hinge. */
+  setAssemblyTransform: (id: CarPartId, next: NodeTransform) => void;
+  /** The user's part of an assembly's live placement, for gizmo -> store. */
+  readAssemblyTransform: (id: CarPartId) => NodeTransform | null;
+  /** Meshes to highlight for a selection or hover. */
+  meshesFor: (level: 'assembly' | 'node', id: string) => THREE.Mesh[];
+  /** Every mesh in the car, e.g. to build picking acceleration structures. */
+  allMeshes: () => THREE.Mesh[];
+  /** World-space bounds of an assembly or node, written into `target`. */
+  boundsFor: (level: 'assembly' | 'node', id: string, target: THREE.Box3) => boolean;
+  /** Advance the springs and pops. `instant` jumps straight to the targets. */
+  update: (dt: number, instant: boolean) => void;
+  /** Jump every animation to its target now. */
+  settle: () => void;
   /** Which assemblies actually exist in the loaded asset. */
   presentParts: () => CarPartId[];
   dispose: () => void;
 }
+
+/* ------------------------------------------------------------------ */
+/* Motion                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One animated scalar, driven by a critically damped spring. Critical damping
+ * starts from rest with zero velocity (no lurch) and never overshoots, which
+ * is what a door on a hinge should do.
+ */
+interface Channel {
+  value: number;
+  target: number;
+  velocity: number;
+  omega: number;
+}
+
+/**
+ * Stiffness is chosen per change. A big jump (an agent opening a door, a
+ * click on the slider track) gets a soft spring and glides; a stream of small
+ * steps (dragging the slider, a hand pulling the car apart) gets a stiff one,
+ * so the part tracks the input instead of trailing a rubber band behind it.
+ */
+const JUMP_THRESHOLD = 0.12;
+const OMEGA_STIFF = 18;
+
+const makeChannel = (soft: number): Channel & { soft: number } => ({
+  value: 0,
+  target: 0,
+  velocity: 0,
+  omega: soft,
+  soft,
+});
+
+function aimChannel(c: Channel & { soft: number }, target: number): void {
+  const next = Math.max(0, Math.min(1, target));
+  if (next === c.target) return;
+  c.omega = Math.abs(next - c.value) > JUMP_THRESHOLD ? c.soft : OMEGA_STIFF;
+  c.target = next;
+}
+
+/** Closed-form critically damped step. Returns true while still moving. */
+function stepChannel(c: Channel, dt: number): boolean {
+  if (c.value === c.target && c.velocity === 0) return false;
+  const x = c.value - c.target;
+  const w = c.omega;
+  const decay = Math.exp(-w * dt);
+  const drive = (c.velocity + w * x) * dt;
+  const nx = (x + drive) * decay;
+  const nv = (c.velocity - w * drive) * decay;
+  if (Math.abs(nx) < 1e-4 && Math.abs(nv) < 1e-3) {
+    c.value = c.target;
+    c.velocity = 0;
+  } else {
+    c.value = c.target + nx;
+    c.velocity = nv;
+  }
+  return true;
+}
+
+function settleChannel(c: Channel): boolean {
+  if (c.value === c.target && c.velocity === 0) return false;
+  c.value = c.target;
+  c.velocity = 0;
+  return true;
+}
+
+/** Seconds a part takes to pop off, and to pop back on. */
+const POP_OUT = 0.22;
+const POP_IN = 0.42;
+/** How far a part lifts away as it pops off, in car units. */
+const POP_TRAVEL = 0.35;
+
+const easeInCubic = (t: number): number => t * t * t;
+/** Overshoots slightly and settles: the part lands rather than appears. */
+const easeOutBack = (t: number): number => {
+  const c1 = 1.4;
+  const c3 = c1 + 1;
+  const u = t - 1;
+  return 1 + c3 * u * u * u + c1 * u * u;
+};
 
 const PRINT_COLOR = 0xd8dae2;
 
@@ -291,9 +431,18 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   const originalMaterials = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
   for (const mesh of meshes) originalMaterials.set(mesh, mesh.material);
 
+  // The concept car's own naming first; anything it calls plain bodywork is
+  // sorted by the generic rules, which is all a downloaded model gets.
+  const frame = carFrame(meshes, model);
+  const sorted = classifyMeshes(meshes, frame, (mesh) => {
+    const id = classify(mesh);
+    return id === 'body' ? null : id;
+  });
+  const fwd = frame.forward;
+
   const buckets = new Map<CarPartId, THREE.Mesh[]>();
   for (const mesh of meshes) {
-    const id = classify(mesh);
+    const id = sorted.get(mesh) ?? 'body';
     const list = buckets.get(id);
     if (list) list.push(mesh);
     else buckets.set(id, [mesh]);
@@ -323,29 +472,31 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     const anchor = centre.clone();
     let hinge: Hinge | null = null;
 
+    // Which end is the nose comes from the frame, not from an assumption:
+    // a downloaded model can face any way along its length.
+    const noseAtMax = (forwardIsZ ? fwd.z : fwd.x) >= 0;
+
     if (id === 'doorLeft' || id === 'doorRight') {
       // Hinge on the FRONT vertical edge of the door.
-      if (forwardIsZ) anchor.z = box.max.z;
-      else anchor.x = box.max.x;
-      // Which side of the car this door is on, measured on the LATERAL axis —
-      // which is X only when the car runs along Z.
-      const outward = forwardIsZ
-        ? centre.x - fullCentre.x
-        : centre.z - fullCentre.z;
-      hinge = {
-        axis: 'y',
-        maxAngle: THREE.MathUtils.degToRad(62) * (outward >= 0 ? -1 : 1),
-      };
+      if (forwardIsZ) anchor.z = noseAtMax ? box.max.z : box.min.z;
+      else anchor.x = noseAtMax ? box.max.x : box.min.x;
+      // Swing the rear of the door OUT, away from the car. Turning about Y by
+      // a small angle moves a point p by (p.z, 0, -p.x); the rear edge sits at
+      // p = -forward, so the sign that pushes it along `out` is the sign of
+      // -forward.z * out.x + forward.x * out.z.
+      const out = forwardIsZ
+        ? new THREE.Vector3(Math.sign(centre.x - fullCentre.x) || 1, 0, 0)
+        : new THREE.Vector3(0, 0, Math.sign(centre.z - fullCentre.z) || 1);
+      const sign = Math.sign(-fwd.z * out.x + fwd.x * out.z) || 1;
+      hinge = { axis: 'y', maxAngle: THREE.MathUtils.degToRad(62) * sign };
     } else if (id === 'hood') {
       // Hinge on the REAR edge, so it lifts at the front like a real bonnet.
-      if (forwardIsZ) anchor.z = box.min.z;
-      else anchor.x = box.min.x;
-      // A bonnet pivots about the LATERAL axis, which is whichever horizontal
-      // axis is not the forward one.
-      hinge = {
-        axis: forwardIsZ ? 'x' : 'z',
-        maxAngle: THREE.MathUtils.degToRad(-52),
-      };
+      if (forwardIsZ) anchor.z = noseAtMax ? box.min.z : box.max.z;
+      else anchor.x = noseAtMax ? box.min.x : box.max.x;
+      // Pivot about the lateral axis, in the direction that RAISES the nose:
+      // about X a front point rises with -forward.z, about Z with +forward.x.
+      const sign = forwardIsZ ? Math.sign(-fwd.z) || -1 : Math.sign(fwd.x) || 1;
+      hinge = { axis: forwardIsZ ? 'x' : 'z', maxAngle: THREE.MathUtils.degToRad(52) * sign };
     }
 
     pivot.position.copy(anchor);
@@ -370,7 +521,11 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
       nodePivot.name = 'node:' + nodeId;
       nodePivot.position.copy(localCentre);
       pivot.add(nodePivot);
-      nodePivot.attach(mesh);
+
+      const pop = new THREE.Group();
+      pop.name = 'pop:' + nodeId;
+      nodePivot.add(pop);
+      pop.attach(mesh);
 
       assemblySeq.set(id, (assemblySeq.get(id) ?? 0) + 1);
 
@@ -404,6 +559,11 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
         mesh,
         basePosition: localCentre.clone(),
         triangles,
+        pop,
+        popValue: 1,
+        popFrom: 1,
+        popTo: 1,
+        popClock: -1,
       };
       nodes.set(nodeId, node);
       meshToNode.set(mesh, nodeId);
@@ -430,6 +590,9 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
       basePosition: anchor.clone(),
       explodeDir: dir,
       hinge,
+      userOffset: new THREE.Vector3(),
+      userQuat: new THREE.Quaternion(),
+      userScale: 1,
     });
   }
 
@@ -446,9 +609,50 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
 
   let finish: CarFinish = 'paint';
 
+  /* --- hologram ------------------------------------------------------- */
+
+  const holo = createHologram();
+  let holoClock = 0;
+  /** Meshes still waiting for their edge lines, built a few per frame. */
+  const edgeQueue: THREE.Mesh[] = [];
+  /** Per-frame budget for building edge lines, in ms. */
+  const EDGE_BUDGET_MS = 4;
+
+  const showEdges = (visible: boolean): void => {
+    for (const mesh of meshes) {
+      for (const child of mesh.children) {
+        if (child.name === 'wf-holo-edges') child.visible = visible;
+      }
+    }
+  };
+
+  const queueEdges = (list: THREE.Mesh[]): void => {
+    for (const mesh of list) if (!edgeQueue.includes(mesh)) edgeQueue.push(mesh);
+  };
+
+  const buildSomeEdges = (): void => {
+    if (!edgeQueue.length || finish !== 'hologram') return;
+    const start = performance.now();
+    // Always at least one, or a permanently busy frame would never finish.
+    do {
+      const mesh = edgeQueue.shift()!;
+      const lines = holo.edgesFor(mesh);
+      if (lines && lines.parent !== mesh) mesh.add(lines);
+      if (lines) lines.visible = true;
+    } while (edgeQueue.length && performance.now() - start < EDGE_BUDGET_MS);
+  };
+
   const setFinish = (next: CarFinish): void => {
     if (next === finish) return;
     finish = next;
+
+    if (next === 'hologram') {
+      for (const mesh of meshes) mesh.material = holo.surface;
+      showEdges(true);
+      queueEdges(meshes);
+      return;
+    }
+    showEdges(false);
 
     if (next === 'print') {
       for (const mesh of meshes) mesh.material = printMaterial;
@@ -472,44 +676,239 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   /* --- motion --------------------------------------------------------- */
 
   const explodeSpan = maxDim * 0.55;
-  let explodeT = 0;
 
-  const applyExplode = (): void => {
-    for (const assembly of assemblies.values()) {
-      assembly.pivot.position
-        .copy(assembly.basePosition)
-        .addScaledVector(assembly.explodeDir, explodeSpan * explodeT);
-    }
+  // Soft stiffness per channel: exploding moves the most, so it glides longest.
+  const explode = makeChannel(6.5);
+  const hingeChannels = new Map<CarPartId, Channel & { soft: number }>([
+    ['doorLeft', makeChannel(7.5)],
+    ['doorRight', makeChannel(7.5)],
+    ['hood', makeChannel(7.5)],
+  ]);
+
+  const AXES = {
+    x: new THREE.Vector3(1, 0, 0),
+    y: new THREE.Vector3(0, 1, 0),
+    z: new THREE.Vector3(0, 0, 1),
+  } as const;
+  const scratchHinge = new THREE.Quaternion();
+  const scratchUser = new THREE.Quaternion();
+  const scratchEuler = new THREE.Euler();
+  const scratchOffset = new THREE.Vector3();
+
+  const hingeQuatAt = (
+    assembly: Assembly,
+    t: number,
+    out: THREE.Quaternion,
+  ): THREE.Quaternion => {
+    if (!assembly.hinge) return out.identity();
+    const angle = assembly.hinge.maxAngle * Math.max(0, Math.min(1, t));
+    return out.setFromAxisAngle(AXES[assembly.hinge.axis], angle);
+  };
+
+  const hingeQuat = (assembly: Assembly, out: THREE.Quaternion): THREE.Quaternion =>
+    hingeQuatAt(assembly, hingeChannels.get(assembly.id)?.value ?? 0, out);
+
+  const scratchSolveQuat = new THREE.Quaternion();
+  const scratchSolveMat = new THREE.Matrix4();
+  const scratchSolveScale = new THREE.Vector3();
+
+  const hingeValue = (id: CarPartId): number => hingeChannels.get(id)?.value ?? 0;
+
+  const hingeWorldPoint = (
+    id: CarPartId,
+    t: number,
+    local: THREE.Vector3,
+    out: THREE.Vector3,
+  ): boolean => {
+    const assembly = assemblies.get(id);
+    const parent = assembly?.pivot.parent;
+    if (!assembly || !assembly.hinge || !parent) return false;
+    // Exactly compose()'s pose, with the hinge at t instead of where it is.
+    scratchSolveQuat.copy(assembly.userQuat).multiply(hingeQuatAt(assembly, t, scratchHinge));
+    scratchSolveScale.setScalar(assembly.userScale);
+    scratchSolveMat.compose(assembly.pivot.position, scratchSolveQuat, scratchSolveScale);
+    out.copy(local).applyMatrix4(scratchSolveMat).applyMatrix4(parent.matrixWorld);
+    return true;
+  };
+
+  /**
+   * The ONE place an assembly pivot is written: rest pose, plus explode, plus
+   * the user's placement, with the hinge swing applied inside the user's
+   * rotation so a door dragged somewhere still opens about its own hinge.
+   */
+  const compose = (assembly: Assembly): void => {
+    const p = assembly.pivot;
+    p.position
+      .copy(assembly.basePosition)
+      .addScaledVector(assembly.explodeDir, explodeSpan * explode.value)
+      .add(assembly.userOffset);
+    p.quaternion.copy(assembly.userQuat).multiply(hingeQuat(assembly, scratchHinge));
+    p.scale.setScalar(assembly.userScale);
+  };
+
+  const composeAll = (): void => {
+    for (const assembly of assemblies.values()) compose(assembly);
   };
 
   const setExplode = (t: number): void => {
-    explodeT = Math.max(0, Math.min(1, t));
-    applyExplode();
-  };
-
-  const swing = (assembly: Assembly | undefined, t: number): void => {
-    if (!assembly || !assembly.hinge) return;
-    const clamped = Math.max(0, Math.min(1, t));
-    const angle = assembly.hinge.maxAngle * clamped;
-    const axis = assembly.hinge.axis;
-    if (axis === 'y') assembly.pivot.rotation.y = angle;
-    else if (axis === 'x') assembly.pivot.rotation.x = angle;
-    else assembly.pivot.rotation.z = angle;
+    aimChannel(explode, t);
   };
 
   const setDoor = (side: 'left' | 'right', t: number): void => {
-    swing(assemblies.get(side === 'left' ? 'doorLeft' : 'doorRight'), t);
+    const channel = hingeChannels.get(side === 'left' ? 'doorLeft' : 'doorRight');
+    if (channel) aimChannel(channel, t);
   };
 
   const setHood = (t: number): void => {
-    swing(assemblies.get('hood'), t);
+    const channel = hingeChannels.get('hood');
+    if (channel) aimChannel(channel, t);
+  };
+
+  /* --- pops ------------------------------------------------------------ */
+
+  const hiddenAssemblies = new Set<CarPartId>();
+  const hiddenNodeIds = new Set<string>();
+  const popping = new Set<CarNode>();
+  const scratchPopQuat = new THREE.Quaternion();
+
+  const applyPop = (node: CarNode): void => {
+    const v = node.popValue;
+    node.pop.scale.setScalar(Math.max(0.0001, v));
+    // Lift along the part's outward axis as it shrinks, expressed in the
+    // pivot's frame so a part the user has rotated still lifts AWAY from the
+    // car rather than along its own spun axis.
+    scratchPopQuat.copy(node.pivot.quaternion).invert();
+    node.pop.position
+      .copy(node.outward)
+      .applyQuaternion(scratchPopQuat)
+      .multiplyScalar((POP_TRAVEL * (1 - Math.min(1, v))) / (node.pivot.scale.x || 1));
+  };
+
+  /** Rest state: full size, no offset, and simply invisible when hidden. */
+  const restPop = (node: CarNode): void => {
+    node.popClock = -1;
+    node.popValue = node.popTo;
+    node.pop.scale.setScalar(1);
+    node.pop.position.set(0, 0, 0);
+    // At rest a hidden part keeps its true size, so measuring it (an agent
+    // asking what the wheel it just removed weighs) is unaffected.
+    node.pivot.visible = node.popTo > 0;
+    popping.delete(node);
+  };
+
+  const aimPop = (node: CarNode, show: boolean): void => {
+    const to = show ? 1 : 0;
+    if (node.popTo === to) return;
+    node.popFrom = node.popClock >= 0 ? node.popValue : show ? 0 : 1;
+    node.popTo = to;
+    node.popClock = 0;
+    node.pivot.visible = true;
+    popping.add(node);
+    applyPop(node);
+  };
+
+  const refreshPops = (): void => {
+    for (const node of nodes.values()) {
+      aimPop(node, !hiddenNodeIds.has(node.id) && !hiddenAssemblies.has(node.assembly));
+    }
+  };
+
+  const stepPops = (dt: number): void => {
+    for (const node of popping) {
+      const duration = node.popTo > node.popFrom ? POP_IN : POP_OUT;
+      node.popClock += dt;
+      const t = Math.min(1, node.popClock / duration);
+      const eased = node.popTo > node.popFrom ? easeOutBack(t) : easeInCubic(t);
+      node.popValue = node.popFrom + (node.popTo - node.popFrom) * eased;
+      if (t >= 1) restPop(node);
+      else applyPop(node);
+    }
   };
 
   const setHidden = (ids: CarPartId[]): void => {
-    const hidden = new Set(ids);
-    for (const assembly of assemblies.values()) {
-      assembly.pivot.visible = !hidden.has(assembly.id);
+    hiddenAssemblies.clear();
+    for (const id of ids) hiddenAssemblies.add(id);
+    refreshPops();
+  };
+
+  /* --- user placement of whole assemblies ------------------------------- */
+
+  const setAssemblyTransform = (id: CarPartId, next: NodeTransform): void => {
+    const assembly = assemblies.get(id);
+    if (!assembly) return;
+    assembly.userOffset.set(next.x, next.y, next.z);
+    scratchEuler.set(
+      THREE.MathUtils.degToRad(next.rotX),
+      THREE.MathUtils.degToRad(next.rotY),
+      THREE.MathUtils.degToRad(next.rotZ),
+      'XYZ',
+    );
+    assembly.userQuat.setFromEuler(scratchEuler);
+    if (assembly.userScale !== next.scale) assembly.measurement = null;
+    assembly.userScale = next.scale;
+    compose(assembly);
+  };
+
+  const readAssemblyTransform = (id: CarPartId): NodeTransform | null => {
+    const assembly = assemblies.get(id);
+    if (!assembly) return null;
+    const p = assembly.pivot;
+    // Undo the layers the rig owns, leaving only what the user put there.
+    scratchOffset
+      .copy(p.position)
+      .sub(assembly.basePosition)
+      .addScaledVector(assembly.explodeDir, -explodeSpan * explode.value);
+    hingeQuat(assembly, scratchHinge).invert();
+    scratchUser.copy(p.quaternion).multiply(scratchHinge);
+    scratchEuler.setFromQuaternion(scratchUser, 'XYZ');
+    return {
+      x: scratchOffset.x,
+      y: scratchOffset.y,
+      z: scratchOffset.z,
+      rotX: THREE.MathUtils.radToDeg(scratchEuler.x),
+      rotY: THREE.MathUtils.radToDeg(scratchEuler.y),
+      rotZ: THREE.MathUtils.radToDeg(scratchEuler.z),
+      scale: p.scale.x,
+    };
+  };
+
+  /* --- frame ----------------------------------------------------------- */
+
+  const moved = new Set<Assembly>();
+
+  const update = (dt: number, instant: boolean): void => {
+    const step = Math.min(0.05, Math.max(0, dt));
+    // The hologram's shimmer and its edge lines are not part of the motion
+    // that reduced-motion turns off: edges must still be built.
+    if (finish === 'hologram') {
+      holoClock += instant ? 0 : step;
+      holo.update(holoClock);
+      buildSomeEdges();
     }
+    if (instant) {
+      settle();
+      return;
+    }
+    const explodeMoving = stepChannel(explode, step);
+    moved.clear();
+    for (const [id, channel] of hingeChannels) {
+      if (stepChannel(channel, step)) {
+        const assembly = assemblies.get(id);
+        if (assembly) moved.add(assembly);
+      }
+    }
+    if (explodeMoving) composeAll();
+    else for (const assembly of moved) compose(assembly);
+    if (popping.size) stepPops(step);
+  };
+
+  const settle = (): void => {
+    let dirty = settleChannel(explode);
+    for (const channel of hingeChannels.values()) {
+      if (settleChannel(channel)) dirty = true;
+    }
+    if (dirty) composeAll();
+    for (const node of Array.from(popping)) restPop(node);
   };
 
   const presentParts = (): CarPartId[] =>
@@ -557,6 +956,10 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   const setNodeTransform = (id: string, next: NodeTransform): void => {
     const node = nodes.get(id);
     if (!node) return;
+    if (node.pivot.scale.x !== next.scale) {
+      const owner = assemblies.get(node.assembly);
+      if (owner) owner.measurement = null;
+    }
     node.pivot.position.set(
       node.basePosition.x + next.x,
       node.basePosition.y + next.y,
@@ -602,14 +1005,38 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
       .normalize();
   };
 
+  const nodeOutwardLocal = (id: string): THREE.Vector3 | null => {
+    const node = nodes.get(id);
+    return node ? node.outward.clone() : null;
+  };
+
   const hasHinge = (assembly: CarPartId): boolean =>
     Boolean(assemblies.get(assembly)?.hinge);
 
   const setNodeHidden = (ids: string[]): void => {
-    const hidden = new Set(ids);
-    for (const node of nodes.values()) {
-      node.pivot.visible = !hidden.has(node.id);
-    }
+    hiddenNodeIds.clear();
+    for (const id of ids) hiddenNodeIds.add(id);
+    refreshPops();
+  };
+
+  const meshesFor = (level: 'assembly' | 'node', id: string): THREE.Mesh[] => {
+    if (level === 'assembly') return assemblies.get(id as CarPartId)?.meshes ?? [];
+    const node = nodes.get(id);
+    return node ? [node.mesh] : [];
+  };
+
+  const allMeshes = (): THREE.Mesh[] => meshes.slice();
+
+  const boundsFor = (
+    level: 'assembly' | 'node',
+    id: string,
+    target: THREE.Box3,
+  ): boolean => {
+    const pivot = pivotFor(level, id);
+    if (!pivot) return false;
+    pivot.updateMatrixWorld(true);
+    target.setFromObject(pivot);
+    return !target.isEmpty();
   };
 
   const measurePart = (id: CarPartId): PartMeasurement | null => {
@@ -633,6 +1060,9 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     );
 
     applyEditToMeshes(assembly.meshes, edit, pivotPoint);
+    // The edge lines were traced from the old shape.
+    for (const mesh of assembly.meshes) holo.dropEdges(mesh);
+    if (finish === 'hologram') queueEdges(assembly.meshes);
     // The geometry just moved, so any cached measurement is stale.
     assembly.measurement = null;
 
@@ -646,10 +1076,10 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     if (edit.material) {
       const material = buildPartMaterial(edit.material as PartMaterialId);
       assembly.editMaterial = material;
-      if (finish !== 'print') {
+      if (finish === 'paint') {
         for (const mesh of assembly.meshes) mesh.material = material;
       }
-    } else if (finish !== 'print') {
+    } else if (finish === 'paint') {
       for (const mesh of assembly.meshes) {
         const original = originalMaterials.get(mesh);
         if (original) mesh.material = original;
@@ -658,6 +1088,7 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
   };
 
   const dispose = (): void => {
+    popping.clear();
     nodes.clear();
     meshToNode.clear();
     for (const assembly of assemblies.values()) {
@@ -665,6 +1096,8 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
       assembly.meshes.length = 0;
     }
     printMaterial.dispose();
+    holo.dispose();
+    edgeQueue.length = 0;
     originalMaterials.clear();
     assemblies.clear();
     buckets.clear();
@@ -680,14 +1113,25 @@ export function buildCarRig(model: THREE.Object3D): CarRig {
     setNodeHidden,
     readNodeTransform,
     nodeOutwardWorld,
+    nodeOutwardLocal,
     hasHinge,
+    hingeValue,
+    hingeWorldPoint,
     measurePart,
     setPartEdit,
     setFinish,
+    setHologramColor: (hex: string) => holo.setColor(hex),
     setExplode,
     setDoor,
     setHood,
     setHidden,
+    setAssemblyTransform,
+    readAssemblyTransform,
+    meshesFor,
+    allMeshes,
+    boundsFor,
+    update,
+    settle,
     presentParts,
     dispose,
   };

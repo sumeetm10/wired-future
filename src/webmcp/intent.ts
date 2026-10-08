@@ -280,6 +280,10 @@ export function parseIntent(raw: string): Intent | null {
     return build('configure_car_rig', { doorLeft: value, doorRight: value });
   }
 
+  if (/\b(hologram|holographic|holo|projection|x-?ray)\b/.test(text)) {
+    return build('configure_car_rig', { finish: 'hologram' });
+  }
+
   if (/\b(3d print|3-d print|print view|unpainted|resin|prototype|bare|grey model|gray model)\b/.test(text)) {
     return build('configure_car_rig', { finish: 'print' });
   }

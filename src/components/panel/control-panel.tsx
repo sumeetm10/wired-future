@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 import {
   CAMERA_PRESETS,
@@ -98,6 +105,7 @@ const VARIANT_LABELS: Record<CarVariant, string> = {
 };
 
 const FINISH_LABELS: Record<CarFinish, string> = {
+  hologram: 'Hologram',
   paint: 'Painted',
   print: '3D Print',
 };
@@ -151,6 +159,13 @@ function ColorRow(props: {
   );
 }
 
+/** Where the thumb sits, as a CSS percentage, for the lit part of the track. */
+function fillPercent(value: number, min: number, max: number): string {
+  const span = max - min;
+  const t = span > 0 ? (value - min) / span : 0;
+  return Math.max(0, Math.min(100, t * 100)).toFixed(2) + '%';
+}
+
 function RangeRow(props: {
   id: string;
   label: string;
@@ -177,6 +192,7 @@ function RangeRow(props: {
         max={props.max}
         step={props.step}
         value={props.value}
+        style={{ '--wf-fill': fillPercent(props.value, props.min, props.max) } as CSSProperties}
         onChange={(e) => props.onChange(Number(e.target.value))}
       />
     </div>
@@ -528,7 +544,7 @@ export function ControlPanel() {
 
               <div className="wf-field">
                 <span className="wf-label">Finish</span>
-                <div className="wf-grid-2">
+                <div className="wf-grid-3">
                   {CAR_FINISHES.map((finish) => (
                     <button
                       key={finish}
@@ -859,7 +875,7 @@ export function ControlPanel() {
 
           <RangeRow
             id={uid + '-wave'}
-            label="Wave Velocity"
+            label="Ring Speed"
             value={waveVelocity}
             min={LIMITS.waveVelocity.min}
             max={LIMITS.waveVelocity.max}
@@ -870,7 +886,7 @@ export function ControlPanel() {
 
           <RangeRow
             id={uid + '-amp'}
-            label="Wave Amplitude"
+            label="Stage Glow"
             value={waveAmplitude}
             min={LIMITS.waveAmplitude.min}
             max={LIMITS.waveAmplitude.max}

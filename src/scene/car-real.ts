@@ -14,7 +14,16 @@
  */
 
 import * as THREE from 'three';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+
+/**
+ * Downloaded models are often compressed. Meshopt decodes in plain JS; Draco
+ * needs its decoder, fetched from Google's CDN only when a Draco file shows up.
+ */
+const DRACO_DECODER_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5.7/';
+let draco: DRACOLoader | null = null;
 
 import { buildCarRig, type CarRig } from './car-rig';
 import { disposeObject3D, type ModelHandle } from './models';
@@ -75,11 +84,26 @@ export interface RealCarHandle extends ModelHandle {
 export async function loadRealCar(
   gridHex: string,
   accentHex: string,
+  /** Fraction 0..1 as the asset streams, or -1 when the size is unknown. */
+  onProgress?: (fraction: number) => void,
+  /** A different car to load, e.g. an object URL for a file the user picked. */
+  modelUrl?: string | null,
 ): Promise<RealCarHandle> {
   const loader = new GLTFLoader();
-  const url = assetUrl();
+  if (!draco) {
+    draco = new DRACOLoader();
+    draco.setDecoderPath(DRACO_DECODER_PATH);
+  }
+  loader.setDRACOLoader(draco);
+  loader.setMeshoptDecoder(MeshoptDecoder);
+  const url = modelUrl || assetUrl();
 
-  const gltf = await loader.loadAsync(url);
+  const gltf = await loader.loadAsync(url, (event) => {
+    if (!onProgress) return;
+    // Without a Content-Length the loader reports total 0; say so rather than
+    // pretending to know how far along it is.
+    onProgress(event.total > 0 ? Math.min(1, event.loaded / event.total) : -1);
+  });
   const model = gltf.scene;
   normalise(model);
 
@@ -139,6 +163,7 @@ export async function loadRealCar(
   const glowDisc = new THREE.Mesh(glowGeometry, glowMaterial);
   glowDisc.rotation.x = -Math.PI / 2;
   glowDisc.position.y = 0.02;
+  glowDisc.visible = false;
   group.add(glowDisc);
 
   // No wireframe overlay: the point of loading a real asset is the real
@@ -170,6 +195,7 @@ export async function loadRealCar(
     }
     underglow.color.set(nextGrid);
     glowMaterial.color.set(nextGrid);
+    rig.setHologramColor(nextGrid);
   };
 
   setColors(gridHex, accentHex);

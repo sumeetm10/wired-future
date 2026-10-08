@@ -441,7 +441,7 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
   const modifyEnvironment: McpToolDescriptor<ToolInput> = {
     name: 'modify_wired_future_environment',
     description:
-      'Restyle the Wired Future world: recolour the neon wireframe terrain, swap the hero model between the cyber-car and the engine block, and retune how violently the landscape ripples and how thick the fog sits. This is the main creative control - reach for it whenever someone asks the scene to look different. Every property is optional and you must supply at least one; anything you leave out keeps its current value. Numeric values outside their documented range are clamped rather than rejected. The same change appears instantly in the human control panel, so the person watching sees exactly what you did.',
+      'Restyle the Wired Future world: recolour the hologram (stage rings, floor grid and the glow of the car), swap the hero model between the cyber-car and the engine block, and retune how fast the stage rings turn, how bright they glow and how thick the fog sits. This is the main creative control - reach for it whenever someone asks the scene to look different. Every property is optional and you must supply at least one; anything you leave out keeps its current value. Numeric values outside their documented range are clamped rather than rejected. The same change appears instantly in the human control panel, so the person watching sees exactly what you did.',
     annotations: {
       title: 'Restyle the environment',
       readOnlyHint: false,
@@ -458,7 +458,7 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
         gridColorHex: {
           type: 'string',
           description:
-            'Hex colour for the terrain wireframe, primary point light and model accents. Accepts #rgb or #rrggbb, for example "#00f0ff" or "#0ff". This is the dominant colour of the whole scene, so change it first when asked for a different mood. CSS colour names such as "cyan" are rejected - convert to hex yourself.',
+            'Hex colour for the hologram: stage rings, floor grid, the glow and edge lines of the car, and the primary light. Accepts #rgb or #rrggbb, for example "#00f0ff" or "#0ff". This is the dominant colour of the whole scene, so change it first when asked for a different mood. CSS colour names such as "cyan" are rejected - convert to hex yourself.',
         },
         accentColorHex: {
           type: 'string',
@@ -476,14 +476,14 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
           minimum: LIMITS.waveVelocity.min,
           maximum: LIMITS.waveVelocity.max,
           description:
-            'Speed multiplier for the terrain wave math, 0 to 5. 0 freezes the landscape solid, 1 is the calm default, 2.5 reads as an energetic ripple, 5 is a violent churn. Out-of-range values are clamped.',
+            'How fast the hologram platform rings under the car turn, 0 to 5. 0 holds them still, 1 is the calm default, 5 spins them fast. (Named for the wave landscape this stage replaced.) Out-of-range values are clamped.',
         },
         waveAmplitude: {
           type: 'number',
           minimum: LIMITS.waveAmplitude.min,
           maximum: LIMITS.waveAmplitude.max,
           description:
-            'Height of the terrain waves, 0 to 4. 0 flattens the grid into a plane, 1 is the default swell, 4 is a mountainous chop that swallows the horizon. Clamped.',
+            'Brightness of the hologram platform and floor grid, 0 to 4. 0 is nearly dark, 1 is the default, 4 is a blazing stage. (Named for the wave landscape this stage replaced.) Clamped.',
         },
         fogDensity: {
           type: 'number',
@@ -1259,9 +1259,9 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
       properties: {
         finish: {
           type: 'string',
-          enum: ['paint', 'print'],
+          enum: [...CAR_FINISHES],
           description:
-            "paint = the asset's own PBR bodywork. print = matte resin grey with the glass made solid, like an unpainted 3D print.",
+            "hologram = glowing projected light with every edge traced, the default look. paint = the asset's own PBR bodywork. print = matte resin grey with the glass made solid, like an unpainted 3D print.",
         },
         explode: {
           type: 'number',
@@ -1301,7 +1301,7 @@ export function buildTools(getEngine: () => WiredEngine | null): McpToolDescript
 
         if (raw.finish && !CAR_FINISHES.includes(raw.finish as CarFinish)) {
           return failure(
-            "configure_car_rig finish must be 'paint' or 'print', got \"" +
+            "configure_car_rig finish must be 'hologram', 'paint' or 'print', got \"" +
               raw.finish +
               '".',
           );

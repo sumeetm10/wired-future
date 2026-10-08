@@ -41,9 +41,27 @@ export interface HandTracker {
   stop: () => void;
 }
 
+/** With no hand in view for this long, look for one less often. */
+const IDLE_AFTER_MS = 1000;
+/** Gap between frames while idle: still quick to notice a raised hand. */
+const IDLE_GAP_MS = 125;
+/** Main-thread fallback never runs faster than this, so the page keeps breathing. */
+const FALLBACK_GAP_MS = 66;
+
+interface Detection {
+  landmarks?: Landmark[][];
+  worldLandmarks?: Landmark[][];
+}
+
 /**
  * Start the camera and the landmarker. Resolves once frames are flowing;
  * rejects if the camera is refused or the model cannot load.
+ *
+ * Detection runs in a Web Worker (hand-worker.ts). The page only grabs each
+ * camera frame as an ImageBitmap and posts it; it never waits for the model.
+ * One frame is in flight at a time, so a slow GPU lowers the tracking rate
+ * instead of queueing frames and lagging. If a worker cannot be started, the
+ * old main-thread path runs instead, throttled.
  */
 export async function startHandTracker(
   opts: HandTrackerOptions,
@@ -56,18 +74,36 @@ export async function startHandTracker(
 
   onStatus('asking for the camera');
 
-  // Modest resolution on purpose: the landmarker downsamples anyway, and a
-  // 1080p stream costs frame time for no extra accuracy.
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+  // Modest resolution and rate on purpose: the model works on a small crop
+  // anyway, and a 1080p/60 stream costs decode time for nothing.
+  const preferred: MediaStreamConstraints = {
+    video: {
+      width: { ideal: 640 },
+      height: { ideal: 480 },
+      frameRate: { ideal: 30 },
+      facingMode: 'user',
+    },
     audio: false,
-  });
+  };
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(preferred);
+  } catch (err) {
+    // Some drivers reject even "ideal" hints; the plainest request is the
+    // last word on whether a camera is there at all.
+    const name = err instanceof DOMException ? err.name : '';
+    if (name !== 'NotFoundError' && name !== 'OverconstrainedError') throw err;
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
 
   let stopped = false;
   let rafHandle = 0;
   let vfcHandle = 0;
-  let landmarker: { detectForVideo: (v: HTMLVideoElement, ts: number) => { landmarks?: Landmark[][] }; close: () => void } | null =
-    null;
+  let worker: Worker | null = null;
+  let landmarker: {
+    detectForVideo: (v: HTMLVideoElement, ts: number) => Detection;
+    close: () => void;
+  } | null = null;
 
   const stop = () => {
     if (stopped) return;
@@ -78,11 +114,60 @@ export async function startHandTracker(
     }
     for (const track of stream.getTracks()) track.stop();
     video.srcObject = null;
-    // Closing frees the WASM heap; without it a second enable leaks the first
-    // landmarker for the life of the tab.
+    // Terminating the worker frees its WASM heap and GPU context; closing the
+    // fallback landmarker does the same on the main thread.
+    worker?.terminate();
+    worker = null;
     landmarker?.close();
     landmarker = null;
   };
+
+  let lastHandAt = 0;
+  let lastSentAt = 0;
+  const deliver = (result: Detection, aspect: number, now: number) => {
+    const hands: HandReading[] = [];
+    const all = result.landmarks ?? [];
+    for (let i = 0; i < all.length; i += 1) {
+      // World landmarks are index-aligned with image landmarks.
+      const reading = readHand(all[i], result.worldLandmarks?.[i], aspect);
+      if (reading) hands.push(reading);
+    }
+    if (hands.length) lastHandAt = now;
+    onFrame({ hands });
+  };
+
+  /** Too soon for another frame? Idle when no hand has been seen for a while. */
+  const tooSoon = (now: number, minGap: number) => {
+    const idle = now - lastHandAt > IDLE_AFTER_MS;
+    return now - lastSentAt < Math.max(minGap, idle ? IDLE_GAP_MS : 0);
+  };
+
+  const startWorker = (): Promise<Worker> =>
+    new Promise((resolve, reject) => {
+      let w: Worker;
+      try {
+        w = new Worker(new URL('./hand-worker.ts', import.meta.url));
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      const onFirst = (event: MessageEvent) => {
+        if (event.data?.type === 'ready') {
+          w.removeEventListener('message', onFirst);
+          resolve(w);
+        } else if (event.data?.type === 'error') {
+          w.removeEventListener('message', onFirst);
+          w.terminate();
+          reject(new Error(event.data.message));
+        }
+      };
+      w.addEventListener('message', onFirst);
+      w.addEventListener('error', (e) => {
+        w.terminate();
+        reject(new Error(e.message || 'hand worker failed to start'));
+      });
+      w.postMessage({ type: 'init', wasmRoot: WASM_ROOT, modelUrl: MODEL_URL });
+    });
 
   try {
     video.srcObject = stream;
@@ -92,51 +177,85 @@ export async function startHandTracker(
 
     onStatus('loading the hand model');
 
-    const { FilesetResolver, HandLandmarker } = await import(
-      '@mediapipe/tasks-vision'
-    );
+    try {
+      worker = await startWorker();
+    } catch {
+      worker = null;
+    }
     if (stopped) {
       stop();
       throw new Error('cancelled');
     }
 
-    const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-    const created = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-      runningMode: 'VIDEO',
-      numHands: 2,
-    });
-    if (stopped) {
-      created.close();
-      throw new Error('cancelled');
+    if (!worker) {
+      const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
+      const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
+      const created = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+        numHands: 2,
+      });
+      if (stopped) {
+        created.close();
+        throw new Error('cancelled');
+      }
+      landmarker = created as unknown as typeof landmarker;
     }
-    landmarker = created as unknown as typeof landmarker;
 
     onStatus('tracking');
+
+    // One frame in flight to the worker at a time.
+    let busy = false;
+    if (worker) {
+      worker.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (data?.type === 'result') {
+          busy = false;
+          if (!stopped) deliver(data, data.width / data.height, performance.now());
+        } else if (data?.type === 'frame-error') {
+          busy = false;
+          if (!stopped && data.message !== 'not ready') onError(data.message);
+        }
+      };
+    }
 
     // detectForVideo rejects a timestamp it has already seen, and a paused or
     // still-buffering element reports zero dimensions.
     let lastTs = -1;
 
     const tick = () => {
-      if (stopped || !landmarker) return;
-      if (video.videoWidth > 0 && video.videoHeight > 0) {
-        const ts = performance.now();
-        if (ts > lastTs) {
-          lastTs = ts;
-          try {
-            const result = landmarker.detectForVideo(video, ts);
-            const hands: HandReading[] = [];
-            for (const points of result.landmarks ?? []) {
-              const reading = readHand(points);
-              if (reading) hands.push(reading);
+      if (stopped) return;
+      const now = performance.now();
+      const ready = video.videoWidth > 0 && video.videoHeight > 0 && now > lastTs;
+
+      if (ready && worker && !busy && !tooSoon(now, 0)) {
+        lastTs = now;
+        lastSentAt = now;
+        busy = true;
+        const w = worker;
+        createImageBitmap(video)
+          .then((bitmap) => {
+            if (stopped || worker !== w) {
+              bitmap.close();
+              return;
             }
-            onFrame({ hands });
-          } catch (err) {
-            // One bad frame should not end the session; a broken landmarker
-            // will simply keep throwing and the user can stop it.
-            onError(err instanceof Error ? err.message : String(err));
-          }
+            w.postMessage({ type: 'frame', bitmap, ts: now }, [bitmap]);
+          })
+          .catch(() => {
+            busy = false;
+          });
+      } else if (ready && landmarker && !tooSoon(now, FALLBACK_GAP_MS)) {
+        lastTs = now;
+        lastSentAt = now;
+        try {
+          deliver(
+            landmarker.detectForVideo(video, now),
+            video.videoWidth / video.videoHeight,
+            now,
+          );
+        } catch (err) {
+          // One bad frame should not end the session.
+          onError(err instanceof Error ? err.message : String(err));
         }
       }
       schedule();
