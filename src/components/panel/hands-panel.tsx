@@ -48,6 +48,9 @@ export function HandsPanel({ getEngine }: HandsPanelProps) {
   const [label, setLabel] = useState('');
   const [handCount, setHandCount] = useState(0);
   const [pinch, setPinch] = useState(0);
+  // Tracker results per second: the number to quote when tracking feels slow.
+  const [rate, setRate] = useState(0);
+  const rateRef = useRef({ count: 0, since: 0 });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -115,6 +118,7 @@ export function HandsPanel({ getEngine }: HandsPanelProps) {
     setLabel('');
     setHandCount(0);
     setPinch(0);
+    setRate(0);
     setStatus(message);
   }, []);
 
@@ -151,6 +155,14 @@ export function HandsPanel({ getEngine }: HandsPanelProps) {
           setLabel(next.label);
           setHandCount(next.hands);
           setPinch(Math.round(next.pinch * 20) / 20);
+          const r = rateRef.current;
+          const t = performance.now();
+          r.count += 1;
+          if (t - r.since >= 1000) {
+            setRate(r.since ? Math.round((r.count * 1000) / (t - r.since)) : 0);
+            r.count = 0;
+            r.since = t;
+          }
           draw(frame);
         },
       });
@@ -227,7 +239,12 @@ export function HandsPanel({ getEngine }: HandsPanelProps) {
               {on ? label || status : status}
             </span>
             <span className="wf-readout">
-              {on ? handCount + ' HAND' + (handCount === 1 ? '' : 'S') : ''}
+              {on
+                ? handCount +
+                  ' HAND' +
+                  (handCount === 1 ? '' : 'S') +
+                  (rate ? ' · ' + rate + ' FPS' : '')
+                : ''}
             </span>
           </div>
 

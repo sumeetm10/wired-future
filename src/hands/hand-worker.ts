@@ -17,26 +17,65 @@ type InMessage =
   | { type: 'init'; wasmRoot: string; modelUrl: string }
   | { type: 'frame'; bitmap: ImageBitmap; ts: number };
 
-let landmarker: HandLandmarker | null = null;
+/**
+ * Two landmarkers, because of how MediaPipe tracks in VIDEO mode: it runs the
+ * expensive full-frame palm detector on every frame until it is tracking
+ * `numHands` hands, and only the cheap landmark model after that. With
+ * numHands 2 and one hand up (the usual case) that meant the slow path on
+ * every single frame. So `one` (numHands 1) tracks the common case cheaply,
+ * and `two` looks for a second hand every DISCOVER_MS; while it is tracking
+ * two hands it takes over, and it is cheap then too.
+ */
+let one: HandLandmarker | null = null;
+let two: HandLandmarker | null = null;
+let twoActive = false;
+let lastDiscoverTs = -Infinity;
 let delegate: 'GPU' | 'CPU' = 'GPU';
+const DISCOVER_MS = 300;
 
 const post = (message: unknown) => (self as unknown as Worker).postMessage(message);
 
 async function init(wasmRoot: string, modelUrl: string): Promise<void> {
   const vision = await FilesetResolver.forVisionTasks(wasmRoot);
-  const options = (use: 'GPU' | 'CPU') => ({
-    baseOptions: { modelAssetPath: modelUrl, delegate: use },
-    runningMode: 'VIDEO' as const,
-    numHands: 2,
-  });
+  const create = (use: 'GPU' | 'CPU', numHands: number) =>
+    HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: modelUrl, delegate: use },
+      runningMode: 'VIDEO',
+      numHands,
+    });
   try {
-    landmarker = await HandLandmarker.createFromOptions(vision, options('GPU'));
+    one = await create('GPU', 1);
   } catch {
     // No WebGL in workers on this browser: the CPU path is slower, but it is
     // still off the page's thread.
-    landmarker = await HandLandmarker.createFromOptions(vision, options('CPU'));
+    one = await create('CPU', 1);
     delegate = 'CPU';
   }
+  // Built before 'ready', not after: compiling a second GPU graph stalls the
+  // GPU for seconds, and doing it while the page is drawing froze the scene.
+  try {
+    two = await create(delegate, 2);
+  } catch {
+    two = null;
+  }
+  // The GPU shaders compile on the first detection, not on create: run one
+  // on a blank frame per landmarker now, while the panel still says loading.
+  const blank = new OffscreenCanvas(256, 256);
+  blank.getContext('2d')?.fillRect(0, 0, 256, 256);
+  one.detectForVideo(blank, 1);
+  two?.detectForVideo(blank, 1);
+}
+
+function detect(bitmap: ImageBitmap, ts: number) {
+  if (two && (twoActive || ts - lastDiscoverTs >= DISCOVER_MS)) {
+    if (!twoActive) lastDiscoverTs = ts;
+    const result = two.detectForVideo(bitmap, ts);
+    // With fewer than two hands this frame still counts; `one` takes the
+    // next frame and picks the hand up from there.
+    twoActive = (result.landmarks?.length ?? 0) >= 2;
+    return result;
+  }
+  return one!.detectForVideo(bitmap, ts);
 }
 
 self.onmessage = async (event: MessageEvent<InMessage>) => {
@@ -54,16 +93,18 @@ self.onmessage = async (event: MessageEvent<InMessage>) => {
   const { bitmap, ts } = msg;
   try {
     // Always answer: the page sends the next frame only after a reply.
-    if (!landmarker) {
+    if (!one) {
       post({ type: 'frame-error', message: 'not ready' });
       return;
     }
-    const result = landmarker.detectForVideo(bitmap, ts);
+    const started = performance.now();
+    const result = detect(bitmap, ts);
     post({
       type: 'result',
       ts,
       width: bitmap.width,
       height: bitmap.height,
+      ms: performance.now() - started,
       landmarks: result.landmarks ?? [],
       worldLandmarks: result.worldLandmarks ?? [],
     });

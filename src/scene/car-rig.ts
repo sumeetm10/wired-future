@@ -343,7 +343,7 @@ interface Channel {
  * so the part tracks the input instead of trailing a rubber band behind it.
  */
 const JUMP_THRESHOLD = 0.12;
-const OMEGA_STIFF = 18;
+const OMEGA_STIFF = 30;
 
 const makeChannel = (soft: number): Channel & { soft: number } => ({
   value: 0,
